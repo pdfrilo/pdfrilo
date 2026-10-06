@@ -4,6 +4,8 @@ async function loadMupdf(){if(!mupdf)mupdf=await import('./vendor/mupdf/mupdf.js
 import './vendor/pdf-lib.min.js';
 import {tryPreciseTextRemoval,tryPreciseImageRemoval} from './precise-text-removal.js';
 let original = null;
+const rasterImages=new Map();
+const rasterKey=(page,quad,occurrence)=>page+'|'+quad.map(v=>v.toFixed(2)).join('|')+'|'+occurrence;
 const norm = s => s.normalize('NFKC').replace(/\s/g, '');
 const close = (a,b,t=.12) => a.length===b.length && a.every((v,i)=>Math.abs(v-b[i])<=t);
 const rect = q => [Math.min(q[0],q[2],q[4],q[6]),Math.min(q[1],q[3],q[5],q[7]),Math.max(q[0],q[2],q[4],q[6]),Math.max(q[1],q[3],q[5],q[7])];
@@ -63,7 +65,8 @@ function applyJob(pdf,job) {
       const quad=item.sourceRedactQuad.map((v,i)=>i%2?bounds[1]+v*sy:bounds[0]+v*sx);
       const indices=before.chars.map((c,i)=>overlaps(c.quad,quad)?i:-1).filter(i=>i>=0);
       const selected=indices.map(i=>before.chars[i].c).join('');
-      if(!indices.length || norm(selected)!==norm(item.originalText))
+      const target=norm(item.originalText),actual=norm(selected),copies=target?actual.length/target.length:0;
+      if(!indices.length || !Number.isInteger(copies)||copies<1||actual!==target.repeat(copies))
         throw new Error('This PDF text cannot be isolated safely. Try selecting a different text item.');
       indices.forEach(i=>removedChars.add(i));
       const a=page.createAnnotation('Redact');
@@ -92,9 +95,13 @@ function saveBytes(pdf) {
   try {return b.asUint8Array().slice().buffer;} finally {b.destroy();}
 }
 export async function removeContent(input,jobs,onlyPage=null) {
-  const imageJobs=jobs.filter(job=>(job.images||[]).length);
+  let rasterDocument=null;
+  const imageJobs=jobs.filter(job=>(job.images||[]).length||job.items?.some(item=>item.pixelErase));
   if(imageJobs.length){
-    const exact=await tryPreciseImageRemoval(input,imageJobs);
+    let editor=null;
+    if(imageJobs.some(job=>job.items?.some(item=>item.pixelErase))){await loadMupdf();rasterDocument=mupdf.Document.openDocument(input,'application/pdf');editor=(record,erasures)=>eraseRasterText(rasterDocument.asPDF(),record,erasures);}
+    let exact;try{exact=await tryPreciseImageRemoval(input,imageJobs,editor);}finally{rasterDocument?.destroy();}
+    if(editor&&!exact)throw new Error('The image copy of this text could not be removed safely. No changes were saved.');
     if(exact){input=exact;jobs=jobs.map(job=>({...job,images:[]}));}
   }
   const precise=await tryPreciseTextRemoval(input,jobs.filter(job=>(job.items||[]).length||(job.images||[]).length),onlyPage);if(precise)return precise;
@@ -107,11 +114,44 @@ export async function removeContent(input,jobs,onlyPage=null) {
     return saveBytes(pdf);
   } finally {single?.destroy();doc.destroy();}
 }
+function eraseRasterText(pdf,record,erasures){
+  const q=record.quad,a=q[2]-q[0],b=q[3]-q[1],c=q[4]-q[0],d=q[5]-q[1],det=a*d-b*c;
+  if(Math.abs(det)<1e-8||!record.ref?.objectNumber)return null;
+  const unit=(x,y)=>[(d*(x-q[0])-c*(y-q[1]))/det,(-b*(x-q[0])+a*(y-q[1]))/det];
+  const regions=erasures.map(e=>({...e,uv:e.quad.reduce((all,_,i)=>i%2?all:[...all,unit(e.quad[i],e.quad[i+1])],[])})).filter(e=>Math.max(...e.uv.map(p=>p[0]))>0&&Math.min(...e.uv.map(p=>p[0]))<1&&Math.max(...e.uv.map(p=>p[1]))>0&&Math.min(...e.uv.map(p=>p[1]))<1);
+  if(!regions.length)return null;
+  let ref,image,pix,rgb;
+  try{
+    const cached=rasterImages.get(rasterKey(record.pageNumber,record.quad,record.occurrence));
+    if(cached){rgb=new mupdf.Pixmap(mupdf.ColorSpace.DeviceRGB,[0,0,cached.width,cached.height],true);rgb.getPixels().set(cached.pixels);}
+    else {ref=pdf.newIndirect(record.ref.objectNumber);image=pdf.loadImage(ref);pix=image.toPixmap();rgb=pix.convertToColorSpace(mupdf.ColorSpace.DeviceRGB,true);}
+    const W=rgb.getWidth(),H=rgb.getHeight(),stride=rgb.getStride(),n=rgb.getNumberOfComponents(),pixels=rgb.getPixels(),original=pixels.slice();let changed=0;
+    for(const region of regions){
+      const x0=Math.max(0,Math.floor(Math.min(...region.uv.map(p=>p[0]))*W)),x1=Math.min(W,Math.ceil(Math.max(...region.uv.map(p=>p[0]))*W));
+      const y0=Math.max(0,Math.floor((1-Math.max(...region.uv.map(p=>p[1])))*H)),y1=Math.min(H,Math.ceil((1-Math.min(...region.uv.map(p=>p[1])))*H));
+      if(x1<=x0||y1<=y0)continue;
+      const bg=region.background.match(/[a-f\d]{2}/gi).map(h=>parseInt(h,16));
+      const contrast=(x,y)=>{if(x<0||y<0||x>=W||y>=H)return 0;const i=y*stride+x*n;return Math.max(...bg.map((v,k)=>Math.abs(v-original[i+k])));};
+      const line=new Set(),rw=x1-x0,rh=y1-y0;
+      // Keep rules that extend beyond the selected word, including cell borders.
+      for(let y=y0;y<y1;y++){let start=x0;while(start<x1){if(contrast(start,y)<35){start++;continue;}let left=start,right=start;while(left>0&&contrast(left-1,y)>=35)left--;while(right+1<W&&contrast(right+1,y)>=35)right++;if(right-left+1>rw+8)for(let x=start;x<Math.min(x1,right+1);x++)line.add(y*W+x);start=right+1;}}
+      for(let x=x0;x<x1;x++){let start=y0;while(start<y1){if(contrast(x,start)<35){start++;continue;}let top=start,bottom=start;while(top>0&&contrast(x,top-1)>=35)top--;while(bottom+1<H&&contrast(x,bottom+1)>=35)bottom++;if(bottom-top+1>rh+8)for(let y=start;y<Math.min(y1,bottom+1);y++)line.add(y*W+x);start=bottom+1;}}
+      for(let y=y0;y<y1;y++)for(let x=x0;x<x1;x++){
+        if(line.has(y*W+x)||contrast(x,y)<3)continue;
+        let ink=contrast(x,y)>30;
+        if(!ink)for(let dy=-2;dy<=2&&!ink;dy++)for(let dx=-2;dx<=2&&!ink;dx++)if(!line.has((y+dy)*W+x+dx)&&contrast(x+dx,y+dy)>30)ink=true;
+        if(!ink)continue;const i=y*stride+x*n;for(let k=0;k<3;k++)pixels[i+k]=bg[k];changed++;
+      }
+    }
+    return changed?rgb.asPNG():null;
+  }finally{rgb?.destroy();pix?.destroy();image?.destroy();ref?.destroy();}
+}
 if(typeof self!=='undefined')self.onmessage=async({data})=>{
   const {id,type}=data;
   try {
-    if(type==='init'){original=data.bytes;self.postMessage({id,ok:true});return;}
-    if(type==='clear'){original=null;self.postMessage({id,ok:true});return;}
+    if(type==='init'){original=data.bytes;rasterImages.clear();self.postMessage({id,ok:true});return;}
+    if(type==='raster'){for(const image of data.images)rasterImages.set(rasterKey(data.pageNumber,image.quad,image.occurrence),image);self.postMessage({id,ok:true});return;}
+    if(type==='clear'){original=null;rasterImages.clear();self.postMessage({id,ok:true});return;}
     if(!original)throw new Error('Open a PDF before editing.');
     const bytes=await removeContent(original,data.jobs,data.onlyPage??null);
     self.postMessage({id,ok:true,bytes},[bytes]);

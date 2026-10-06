@@ -36,9 +36,9 @@ function unicodeMap(stream,L){
  return {length,map};
 }
 function fontDecoder(length,map){return value=>{if(value.length%length)throw new Error('Incomplete character code');const glyphs=[];for(let i=0;i<value.length;i+=length){const bytes=value.slice(i,i+length);let code=0;for(const c of bytes)code=code*256+c.charCodeAt(0);const text=map?map.get(code):(code>=32&&code<127?bytes:null);glyphs.push({c:text??null,bytes,code,wordSpace:length===1&&code===32});}return glyphs;};}
-function candidates(source,fontInfo){
- const ts=tokens(source),runs=[];let args=[],ctm=[1,0,0,1,0,0],stack=[];
- let state={font:null,size:0,leading:0,rise:0,mode:0,charSpace:0,wordSpace:0,hScale:1},bt=null;
+function candidates(source,fontInfo,initialMatrix=[1,0,0,1,0,0],initialState={},onForm=null){
+ const ts=tokens(source),runs=[];let args=[],ctm=initialMatrix.slice(),stack=[];
+ let state={font:null,size:0,leading:0,rise:0,mode:0,charSpace:0,wordSpace:0,hScale:1,...initialState},bt=null;
  const position=(matrix,offset=0)=>{const m=mul(ctm,matrix);return [m[4]+m[0]*offset+m[2]*state.rise,m[5]+m[1]*offset+m[3]*state.rise];};
  const moveLine=(x,y)=>{if(!bt)throw new Error('Text outside BT');bt.line=mul(bt.line,[1,0,0,1,x,y]);bt.text=bt.line.slice();bt.known=true;};
  for(const t of ts){if(t.type!=='op'){args.push(t);continue;}const n=args.filter(x=>x.type==='number').map(x=>+x.value);
@@ -46,6 +46,7 @@ function candidates(source,fontInfo){
    case'q':stack.push({ctm:ctm.slice(),state:{...state}});break;
    case'Q':{const saved=stack.pop();if(!saved)throw new Error('Unbalanced graphics state');ctm=saved.ctm;state=saved.state;break;}
    case'cm':if(n.length!==6)throw new Error('Invalid matrix');ctm=mul(ctm,n);break;
+   case'Do':if(onForm){const name=args.find(x=>x.type==='name')?.value;if(name)onForm(name,ctm.slice(),{...state},args[0]?.start??t.start,t.end);}break;
    case'BT':if(bt)throw new Error('Nested text');bt={line:[1,0,0,1,0,0],text:[1,0,0,1,0,0],known:true};break;
    case'ET':if(!bt)throw new Error('Unbalanced text');bt=null;break;
    case'Tf':state.font=args.find(x=>x.type==='name')?.value;state.size=n[0];break;
@@ -89,12 +90,15 @@ export async function tryPreciseTextRemoval(input,jobs,onlyPage=null){
   if(jobs.some(j=>(j.images||[]).length))return null;
   pdf=await L.PDFDocument.load(input,{updateMetadata:false});
   for(const job of jobs){
-   const page=pdf.getPage(job.pageNumber-1),resources=page.node.Resources(),fonts=resources?.lookup(L.PDFName.of('Font'),L.PDFDict);
+   const page=pdf.getPage(job.pageNumber-1);
+   function decoderFor(resources,parentDecoder=null){
+   const fonts=resources?.lookupMaybe(L.PDFName.of('Font'),L.PDFDict);
    const states=resources?.lookup(L.PDFName.of('ExtGState'));
-   if(states instanceof L.PDFDict)for(const [,ref] of states.entries()){const state=pdf.context.lookup(ref);if(state instanceof L.PDFDict&&state.has(L.PDFName.of('Font')))return null;}
+   if(states instanceof L.PDFDict)for(const [,ref] of states.entries()){const state=pdf.context.lookup(ref);if(state instanceof L.PDFDict&&state.has(L.PDFName.of('Font')))throw new Error('Graphics-state font requires fallback');}
    const fontCache=new Map();
    const fontInfo=name=>{if(fontCache.has(name))return fontCache.get(name);let info=null;try{
-    const f=fonts?.lookup(L.PDFName.of(name),L.PDFDict),type=f?.lookup(L.PDFName.of('Subtype'))?.toString(),base=f?.lookup(L.PDFName.of('BaseFont'))?.toString()?.slice(1);
+    const f=fonts?.lookupMaybe(L.PDFName.of(name),L.PDFDict),type=f?.lookup(L.PDFName.of('Subtype'))?.toString(),base=f?.lookup(L.PDFName.of('BaseFont'))?.toString()?.slice(1);
+    if(!f){info=parentDecoder?.(name)??null;fontCache.set(name,info);return info;}
     const matrix=f?.lookup(L.PDFName.of('FontMatrix'));
     if(matrix instanceof L.PDFArray&&!matrix.asArray().every((n,i)=>n instanceof L.PDFNumber&&Math.abs(n.asNumber()-[.001,0,0,.001,0,0][i])<1e-9))return null;
     let encoding=f?.lookup(L.PDFName.of('Encoding'));
@@ -116,11 +120,32 @@ export async function tryPreciseTextRemoval(input,jobs,onlyPage=null){
      if(widths instanceof L.PDFArray||metric)info={decode:fontDecoder(1,unicode?.map),width:code=>{if(widths instanceof L.PDFArray){const w=widths.lookup(code-first);return w instanceof L.PDFNumber?w.asNumber():NaN;}try{return metric.widthOfTextAtSize(String.fromCharCode(code),1000);}catch{return NaN;}}};
     }
    }catch{}fontCache.set(name,info);return info;};
+   return fontInfo;
+   }
+   const decode=stream=>Array.from(L.decodePDFRawStream(stream).decode(),x=>String.fromCharCode(x)).join('');
+   const rawBytes=raw=>Uint8Array.from(raw,c=>c.charCodeAt(0));
+   let count=0,serial=0;
+   function scan(raw,resources,matrix,state={},ancestors=new Set(),form=null,parentDecoder=null){
+    if(++count>10000||ancestors.size>24)throw new Error('Form nesting limit');
+    const node={raw,resources,form,events:[],runs:[]},fontInfo=decoderFor(resources,parentDecoder);
+    const runs=candidates(raw,fontInfo,matrix,state,(name,ctm,childState,start,end)=>{
+     const objects=resources?.lookupMaybe(L.PDFName.of('XObject'),L.PDFDict),ref=objects?.get(L.PDFName.of(name)),x=ref?pdf.context.lookup(ref):null;
+     if(!(x instanceof L.PDFRawStream)||x.dict.lookup(L.PDFName.of('Subtype'))?.toString()!=='/Form')return;
+     if(ancestors.has(x))throw new Error('Recursive form');
+     const next=new Set(ancestors);next.add(x);
+     const m=x.dict.lookup(L.PDFName.of('Matrix')),fm=m instanceof L.PDFArray?m.asArray().map(v=>v.asNumber()):[1,0,0,1,0,0];
+     const childResources=x.dict.lookupMaybe(L.PDFName.of('Resources'),L.PDFDict)||resources;
+     const child=scan(decode(x),childResources,mul(ctm,fm),childState,next,x,fontInfo);
+     node.events.push({start,end,name,child});
+    });
+    for(const run of runs){run.node=node;node.runs.push(run);node.events.push({start:run.start,run});}
+    node.events.sort((a,b)=>a.start-b.start);return node;
+   }
    const contents=page.node.Contents(),streams=contents instanceof L.PDFArray?contents.asArray().map(ref=>pdf.context.lookup(ref)):contents?[contents]:[];
-   // Latin-1 TextDecoder maps 0x80–0x9f through Windows-1252. Preserve raw bytes explicitly.
-   const raw=streams.map(stream=>Array.from(L.decodePDFRawStream(stream).decode(),x=>String.fromCharCode(x)).join('')).join('\n');
-   const runs=candidates(raw,fontInfo),flat=[];
-   for(const run of runs)if(run.safe)for(const glyph of run.glyphs)if(norm(glyph.c))flat.push({run,glyph});
+   const tree=scan(streams.map(decode).join('\n'),page.node.Resources(),[1,0,0,1,0,0]);
+   const flat=[];
+   function flatten(node){for(const e of node.events){if(e.child)flatten(e.child);else if(e.run.safe)for(const glyph of e.run.glyphs)if(norm(glyph.c))flat.push({run:e.run,glyph});}}
+   flatten(tree);
    const selected=new Map();
    for(const item of job.items){
     if(!item.sourcePdfPoint)return null;
@@ -138,8 +163,12 @@ export async function tryPreciseTextRemoval(input,jobs,onlyPage=null){
      }
      if(valid)matches.push(slice);
     }
-    if(matches.length!==1)return null;
-    for(const {run,glyph} of matches[0]){if(!selected.has(run))selected.set(run,new Set());selected.get(run).add(glyph.index);}
+    if(!matches.length)return null;
+    // Overprinted text (often simulated bold) has several identical draw calls.
+    // Remove every coincident copy, while keeping instances elsewhere unchanged.
+    const reference=matches[0];
+    if(matches.some(match=>match.length!==reference.length||match.some((entry,i)=>norm(entry.glyph.c)!==norm(reference[i].glyph.c)||Math.hypot(entry.glyph.point[0]-reference[i].glyph.point[0],entry.glyph.point[1]-reference[i].glyph.point[1])>.2)))return null;
+    for(const match of matches)for(const {run,glyph} of match){if(!selected.has(run))selected.set(run,new Set());selected.get(run).add(glyph.index);}
    }
    const literal=value=>'('+[...value].map(c=>/[()\\]/.test(c)?'\\'+c:c.charCodeAt(0)<32||c.charCodeAt(0)>126?'\\'+c.charCodeAt(0).toString(8).padStart(3,'0'):c).join('')+')';
    const changes=[];
@@ -156,8 +185,29 @@ export async function tryPreciseTextRemoval(input,jobs,onlyPage=null){
     }
     flushString();flushRemoved();changes.push({...run,replacement:run.prefix+'['+output.join(' ')+'] TJ'});
    }
-   let edited=raw;for(const r of changes.sort((a,b)=>b.start-a.start))edited=edited.slice(0,r.start)+r.replacement+edited.slice(r.end);
-   page.node.set(L.PDFName.of('Contents'),pdf.context.register(pdf.context.flateStream(Uint8Array.from(edited,c=>c.charCodeAt(0)))));
+   function rewrite(node){
+    const edits=changes.filter(change=>change.node===node),formChanges=[];
+    for(const e of node.events)if(e.child){const child=rewrite(e.child);if(child.changed)formChanges.push({event:e,child});}
+    if(!edits.length&&!formChanges.length)return {changed:false};
+    let resources=node.resources;
+    if(formChanges.length){
+     resources=resources?resources.clone(pdf.context):pdf.context.obj({});
+     const original=resources.lookupMaybe(L.PDFName.of('XObject'),L.PDFDict),objects=original?original.clone(pdf.context):pdf.context.obj({});
+     for(const {event,child} of formChanges){
+      let name;do{name='RiloTextForm'+(++serial);}while(objects.has(L.PDFName.of(name)));
+      const entries=Object.fromEntries(event.child.form.dict.entries().filter(([key])=>!['Length','Filter','DecodeParms'].includes(key.decodeText())).map(([key,value])=>[key.decodeText(),value]));
+      entries.Resources=child.resources;
+      const ref=pdf.context.register(pdf.context.flateStream(rawBytes(child.raw),entries));objects.set(L.PDFName.of(name),ref);
+      edits.push({start:event.start,end:event.end,replacement:'/'+name+' Do'});
+     }
+     resources.set(L.PDFName.of('XObject'),objects);
+    }
+    let raw=node.raw;for(const edit of edits.sort((a,b)=>b.start-a.start))raw=raw.slice(0,edit.start)+edit.replacement+raw.slice(edit.end);
+    return {changed:true,raw,resources};
+   }
+   const edited=rewrite(tree);
+   if(edited.changed){page.node.set(L.PDFName.of('Contents'),pdf.context.register(pdf.context.flateStream(rawBytes(edited.raw))));page.node.set(L.PDFName.of('Resources'),edited.resources);}
+
   }
   if(onlyPage!=null){const single=await L.PDFDocument.create();const [page]=await single.copyPages(pdf,[onlyPage-1]);single.addPage(page);return (await single.save({updateFieldAppearances:false})).buffer;}
   return (await pdf.save({updateFieldAppearances:false})).buffer;
@@ -166,7 +216,7 @@ export async function tryPreciseTextRemoval(input,jobs,onlyPage=null){
 
 // Remove individual image draw operands, preserving overlapping graphics.
 // Shared Form XObjects are copied only along the selected invocation path.
-export async function tryPreciseImageRemoval(input,jobs){
+export async function tryPreciseImageRemoval(input,jobs,pixelEditor=null){
  const L=globalThis.PDFLib;if(!L)return null;
  try{
   const pdf=await L.PDFDocument.load(input,{updateMetadata:false});
@@ -197,7 +247,7 @@ export async function tryPreciseImageRemoval(input,jobs){
    return result;
   }
   for(const job of jobs){
-   if(!(job.images||[]).length)continue;
+   if(!(job.images||[]).length&&!job.items?.some(item=>item.pixelErase))continue;
    const page=pdf.getPage(job.pageNumber-1),records=[];
    const original=page.node.Contents(),streams=original instanceof L.PDFArray?original.asArray().map(ref=>pdf.context.lookup(ref)):original?[original]:[];
    const resources=page.node.Resources()||L.PDFDict.withContext(pdf.context);
@@ -210,8 +260,8 @@ export async function tryPreciseImageRemoval(input,jobs){
      if(op.op==='cm'){if(op.args.length!==6||op.args.some(a=>a.type!=='number'))throw Error('Invalid matrix');ctm=multiply(ctm,op.args.map(a=>+a.value));continue;}
      if(op.op!=='Do')continue;
      if(op.args.length!==1||op.args[0].type!=='name')throw Error('Invalid XObject invocation');
-     const name=op.args[0].value,stream=xobjects?.lookup(N(name));if(!(stream instanceof L.PDFRawStream))throw Error('Unsupported XObject');
-     const kind=stream.dict.lookup(N('Subtype'))?.toString(),child={...op,name,stream,kind,selected:false};tree.children.push(child);
+     const name=op.args[0].value,ref=xobjects?.get(N(name)),stream=xobjects?.lookup(N(name));if(!(stream instanceof L.PDFRawStream))throw Error('Unsupported XObject');
+     const kind=stream.dict.lookup(N('Subtype'))?.toString(),child={...op,name,ref,stream,kind,selected:false};tree.children.push(child);
      if(kind==='/Image'){
       child.quad=[...transform(ctm,0,0),...transform(ctm,1,0),...transform(ctm,0,1),...transform(ctm,1,1)];
       if(stream.dict.lookup(N('ImageMask'))?.toString()!=='true')records.push(child);
@@ -227,7 +277,7 @@ export async function tryPreciseImageRemoval(input,jobs){
     if(stack.length)throw Error('Unbalanced graphics state');return tree;
    }
    const tree=walk(streams.map(decode).join('\n'),resources,identity);
-   for(const selected of job.images){
+   for(const selected of job.images||[]){
     let matches;
     if(Array.isArray(selected.sourcePdfQuad)&&selected.sourcePdfQuad.length===8){
      matches=records.filter(r=>r.quad.every((n,i)=>Math.abs(n-selected.sourcePdfQuad[i])<.25));
@@ -242,10 +292,19 @@ export async function tryPreciseImageRemoval(input,jobs){
     const candidate=matches.length===1?matches[0]:Number.isInteger(occurrence)&&occurrence>=0?matches[occurrence]:null;
     if(!candidate||candidate.selected)return null;candidate.selected=true;
    }
+   if(pixelEditor)for(const record of records){
+    if(record.selected)continue;
+    record.pageNumber=job.pageNumber;record.occurrence=records.filter(r=>r.quad.every((v,i)=>Math.abs(v-record.quad[i])<.01)).indexOf(record);
+    const erasures=(job.items||[]).filter(item=>item.pixelErase).map(item=>item.pixelErase);
+    if(!erasures.length)continue;
+    const png=await pixelEditor(record,erasures);
+    if(png){const image=await pdf.embedPng(png);await image.embed();record.replacement=image.ref;}
+   }
    function rewrite(tree){
     const res=tree.res.clone(pdf.context),oldX=res.lookupMaybe(N('XObject'),L.PDFDict),xobjects=oldX?oldX.clone(pdf.context):L.PDFDict.withContext(pdf.context),changes=[],changedNames=new Set();
     for(const child of tree.children){
      if(child.selected){changes.push({start:child.start,end:child.end,text:''});changedNames.add(child.name);continue;}
+     if(child.replacement){let name;do{name='RiloImageEdit'+(++serial);}while(xobjects.has(N(name)));xobjects.set(N(name),child.replacement);changes.push({start:child.start,end:child.end,text:'/'+name+' Do'});changedNames.add(child.name);continue;}
      if(!child.tree)continue;
      const edited=rewrite(child.tree);if(!edited)continue;
      const dict=dictRecord(child.stream.dict);dict.Resources=edited.res;

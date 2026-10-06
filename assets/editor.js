@@ -102,6 +102,29 @@
       return withTimeout(pdfLibrariesPromise);
     }
     const editorFontLoads=new Map();
+    let sourceFontDocument=null,sourceFontSerial=0;
+    const sourcePdfFonts=new Map(),sourceFontLoads=new Map();
+    async function loadSourcePdfFont(name){
+      if(!name||typeof FontFace==='undefined')return null;
+      if(sourceFontLoads.has(name))return sourceFontLoads.get(name);
+      const generation=documentGeneration;
+      const promise=(async()=>{
+        await ensureWritingTools();
+        if(!sourceFontDocument)sourceFontDocument=PDFLib.PDFDocument.load(originalBytes,{updateMetadata:false});
+        const doc=await sourceFontDocument,N=PDFLib.PDFName.of;
+        for(const [,value] of doc.context.enumerateIndirectObjects()){
+          if(!(value instanceof PDFLib.PDFDict)||value.lookup(N('Type'))?.toString()!=='/Font')continue;
+          const base=value.lookup(N('BaseFont'))?.decodeText?.();if(base!==name)continue;
+          const descendants=value.lookupMaybe(N('DescendantFonts'),PDFLib.PDFArray),font=descendants?descendants.lookup(0,PDFLib.PDFDict):value,descriptor=font.lookupMaybe(N('FontDescriptor'),PDFLib.PDFDict),stream=descriptor?.lookup(N('FontFile2'));
+          if(!(stream instanceof PDFLib.PDFRawStream))continue;
+          const bytes=PDFLib.decodePDFRawStream(stream).decode().slice(),parsed=window.fontkit.create(bytes),family='RiloPdf'+generation+'_'+sourceFontSerial++;
+          const style=/italic|oblique/i.test(parsed.subfamilyName||parsed.postscriptName)?'italic':'normal',weight=/bold|black|heavy/i.test(parsed.subfamilyName||parsed.postscriptName)?'700':'400';
+          const face=new FontFace(family,bytes,{weight,style});await face.load();if(generation!==documentGeneration)return null;
+          document.fonts.add(face);const entry={family,bytes,face,weight,style,supported:new Set(parsed.characterSet),fallback:compatibleFont(parsed.familyName)};sourcePdfFonts.set(family,entry);return entry;
+        }
+        return null;
+      })().catch(()=>null);sourceFontLoads.set(name,promise);return promise;
+    }
     function ensureEditorFont(family){
       const f=compatibleFont(family);if(!editorFontLoads.has(f))editorFontLoads.set(f,Promise.all(['normal 400','normal 700','italic 400','italic 700'].map(v=>document.fonts.load(v+' 16px '+f))));return editorFontLoads.get(f);
     }
@@ -238,6 +261,7 @@
           if(e.isIntersecting){hydratePage(rec);}
           else if(rec.hydrated && !rec.hydrating && !rec.previewRunning && pageOrder.length>8){
             rec.canvas.width=rec.canvas.height=1;rec.hydrated=false;rec.textLayer.innerHTML='';rec.imageHitLayer.innerHTML='';
+            rec.sourceCheckPatches=null;rec.sourcePatches=null;rec.visibleRemovedSources=null;
             rec.objects.forEach(o=>{delete o.sourceHitIndex;delete o.sourceImageHitIndex;});
           }
         }
@@ -248,6 +272,7 @@
     }
     async function releaseDocument(){
       documentGeneration++;pageObserver?.disconnect();pageObserver=null;
+      for(const entry of sourcePdfFonts.values())document.fonts.delete(entry.face);sourcePdfFonts.clear();sourceFontLoads.clear();sourceFontDocument=null;sourceFontSerial=0;
       if(engineWorker){engineWorker.terminate();engineWorker=null;engineReady=null;rejectEngineRequests(new Error('Document closed.'));}
       thumbnailObserver?.disconnect();
       for(const rec of pageBank.values()){clearTimeout(rec.thumbTimer);clearTimeout(rec.previewTimer);rec.renderTask?.cancel();rec.canvas.width=rec.canvas.height=1;}
@@ -565,6 +590,7 @@
     async function buildTextHitLayer(rec){
       const tc = await rec.page.getTextContent();
       const styles = tc.styles || {};
+      const coincidentHits=new Map();
       let sourceIndex=-1;
       for (const item of tc.items) {
         sourceIndex++;
@@ -578,7 +604,11 @@
         const top = tx[5] - fontSize * ascent;
         const width = Math.max(6, (item.width || item.str.length*fontSize*.5) * rec.viewport.scale);
         const height = Math.max(fontSize*1.02, 8);
+        const key=item.str.normalize('NFKC'),previous=coincidentHits.get(key)||[];
+        if(previous.some(p=>Math.hypot(p.x-tx[4],p.y-tx[5])<.2*rec.viewport.scale&&Math.abs(p.size-fontSize)<.2&&Math.abs(p.width-width)<.4))continue;
+        previous.push({x:tx[4],y:tx[5],size:fontSize,width});coincidentHits.set(key,previous);
         let fontFamily = style.fontFamily || 'Arial, sans-serif';
+        let renderFont=compatibleFont(fontFamily),spanFontName='';
         let fontWeight = '400';
         let fontStyle = 'normal';
         try{
@@ -587,6 +617,8 @@
             ensureEditorFont(fo.name||style.fontFamily).catch(()=>{});
             if (fo.loadedName) fontFamily = '"'+fo.loadedName+'", '+fontFamily;
             const name=fo.name||'';
+            spanFontName=name;
+            renderFont=compatibleFont(name||fontFamily);
             if (fo.black || fo.bold || /bold|black/i.test(name)) fontWeight = fo.black ? '900' : '700';
             if (fo.italic || /italic|oblique/i.test(name)) fontStyle='italic';
           }
@@ -596,6 +628,8 @@
         span.textContent=item.str;
         span.dataset.pdfPoint=JSON.stringify(item.transform.slice(4,6));span.dataset.sourceIndex=sourceIndex;span.dataset.baseline=JSON.stringify([tx[4],tx[5]]);span.dataset.angle=angle;
         span.dataset.font = fontFamily;
+        span.dataset.renderFont=renderFont;
+        span.dataset.pdfFontName=spanFontName;
         span.dataset.size = fontSize.toFixed(2);
         span.dataset.weight = fontWeight;
         span.dataset.style = fontStyle;
@@ -624,7 +658,7 @@
     async function buildImageHitLayer(rec){
       const opList=await rec.page.getOperatorList();
       const OPS=pdfjsLib.OPS;
-      let ctm=[1,0,0,1,0,0], stack=[];
+      let ctm=[1,0,0,1,0,0], stack=[],imageOrdinal=-1;
       const imageOccurrences=new Map();
       const isImageOp = fn => fn===OPS.paintImageXObject || fn===OPS.paintInlineImageXObject || fn===OPS.paintJpegXObject;
       const mul=(a,b)=>pdfjsLib.Util.transform(a,b);
@@ -636,6 +670,7 @@
         if(fn===OPS.paintFormXObjectBegin){stack.push(ctm.slice());if(args[0])ctm=mul(ctm,args[0]);continue}
         if(fn===OPS.paintFormXObjectEnd){ctm=stack.pop()||ctm;continue}
         if(!isImageOp(fn))continue;
+        imageOrdinal++;
         try{
           const apply=(p,m)=>[m[0]*p[0]+m[2]*p[1]+m[4],m[1]*p[0]+m[3]*p[1]+m[5]];
           const pdfCorners=[[0,0],[1,0],[0,1],[1,1]].map(p=>apply(p,ctm));
@@ -652,6 +687,8 @@
           Object.assign(hit.style,{left:x+'px',top:y+'px',width:w+'px',height:h+'px'});
           hit.dataset.x=x;hit.dataset.y=y;hit.dataset.w=w;hit.dataset.h=h;
           hit.dataset.pdfQuad=JSON.stringify(pdfQuad);hit.dataset.occurrence=String(sourceImageOccurrence);hit.dataset.opIndex=String(i);
+          if(typeof args[0]==='string')hit.dataset.imageId=args[0];
+          hit.dataset.imageOrdinal=imageOrdinal;
           const existing=rec.objects.find(o=>o.type==='source-image'&&nearEqual(o.x,x)&&nearEqual(o.y,y)&&nearEqual(o.w,w)&&nearEqual(o.h,h)&&(o.sourceImageOccurrence==null||o.sourceImageOccurrence===sourceImageOccurrence));
           if(existing){hit.dataset.objId=existing.id;existing.sourceImageHitIndex=rec.imageHitLayer.children.length;hit.style.pointerEvents=existing.deleted?'none':'auto';}
           hit.addEventListener('pointerdown',e=>{
@@ -664,7 +701,17 @@
       }
       // Large background images must not intercept clicks on smaller photos.
       [...rec.imageHitLayer.children].sort((a,b)=>(+b.dataset.w*+b.dataset.h)-(+a.dataset.w*+a.dataset.h)||(+a.dataset.opIndex)-(+b.dataset.opIndex)).forEach(hit=>rec.imageHitLayer.appendChild(hit));
-      [...rec.imageHitLayer.children].forEach((hit,index)=>{const obj=rec.objects.find(o=>o.id===hit.dataset.objId);if(obj)obj.sourceImageHitIndex=index;});
+      syncSourceImageHits(rec);
+    }
+
+    function syncSourceImageHits(rec){
+      [...rec.imageHitLayer.children].forEach((hit,index)=>{
+        const quad=JSON.parse(hit.dataset.pdfQuad),occurrence=+hit.dataset.occurrence;
+        const obj=rec.objects.find(o=>o.type==='source-image'&&o.id===hit.dataset.objId)||rec.objects.find(o=>o.type==='source-image'&&(o.sourceImageOccurrence==null||o.sourceImageOccurrence===occurrence)&&(o.sourcePdfQuad?o.sourcePdfQuad.every((v,i)=>nearEqual(v,quad[i],.02)):nearEqual(o.x,+hit.dataset.x)&&nearEqual(o.y,+hit.dataset.y)&&nearEqual(o.w,+hit.dataset.w)&&nearEqual(o.h,+hit.dataset.h)));
+        if(obj){hit.dataset.objId=obj.id;obj.sourceImageHitIndex=index;}
+        else delete hit.dataset.objId;
+        hit.style.pointerEvents=obj?.deleted?'none':'auto';
+      });
     }
 
     function selectExistingImage(rec,hit){
@@ -797,10 +844,26 @@
           const r=med(0),g=med(1),b=med(2);
           const veryClose=close.filter(v=>Math.hypot(v[0]-r,v[1]-g,v[2]-b)<=7).length;
           const confidence=samples.length?veryClose/samples.length:0;
+          // Dense bold headings can cover most of a shallow coloured bar, and
+          // the padded ring also includes the white page outside that bar.
+          // Matching flat rows above AND below the glyphs provide independent
+          // evidence of a solid background without lowering the photo guard.
+          let flatAbove=false,flatBelow=false;
+          const mid=(top+bottom)/2,rowWidth=right-left;
+          if(rowWidth>=12){
+            for(let gy=top;gy<bottom;gy++){
+              let matching=0;
+              for(let gx=left;gx<right;gx++){
+                const i=((gy-ey0)*ew+gx-ex0)*4;
+                if(data[i+3]>=220&&Math.max(Math.abs(data[i]-r),Math.abs(data[i+1]-g),Math.abs(data[i+2]-b))<=7)matching++;
+              }
+              if(matching>=rowWidth*.85){if(gy<mid)flatAbove=true;else flatBelow=true;}
+            }
+          }
           // Ordinary PDF cells/pages are usually one flat colour with dark text
           // drawn on top. Using the dominant background bucket is much more
           // reliable than trying to erase individual antialiased glyph pixels.
-          return {color:rgbHex(r,g,b),flat:(confidence>=0.42||dominance>=0.48),confidence,dominance};
+          return {color:rgbHex(r,g,b),flat:(confidence>=0.42||dominance>=0.48||(confidence>=.22&&flatAbove&&flatBelow)),confidence,dominance};
         }
         return {color:rgbHex(cr,cg,cb),flat:dominance>=0.48,confidence:0,dominance};
       }catch(_){return {color:'#ffffff',flat:false,confidence:0,dominance:0}}
@@ -1028,7 +1091,9 @@
 
     async function editExistingText(rec,span,pointerEvent){
       ensureEngine().catch(()=>{});
-      const generation=documentGeneration;await ensureEditorFont(span.dataset.font);if(generation!==documentGeneration||!pageRecords.has(rec.pageNum)||span.style.pointerEvents==='none')return;
+      const generation=documentGeneration,sourceFont=await loadSourcePdfFont(span.dataset.pdfFontName);
+      if(sourceFont){span.dataset.renderFont=sourceFont.family;span.dataset.weight=sourceFont.weight;span.dataset.style=sourceFont.style;}
+      await ensureEditorFont(span.dataset.renderFont||span.dataset.font);if(generation!==documentGeneration||!pageRecords.has(rec.pageNum)||span.style.pointerEvents==='none')return;
       const sr=span.getBoundingClientRect(), pr=rec.shell.getBoundingClientRect();
       const fontSize=parseFloat(span.dataset.size)||18;
       const x=parseFloat(span.style.left),y=parseFloat(span.style.top),w=Math.max(2,parseFloat(span.style.width));
@@ -1042,6 +1107,13 @@
       // leaves visible letter fragments. Use the complete, neighbour-safe line
       // box instead.
       const sourceMaskRect={x,y,w,h};
+      let pixelErase=null;
+      if(span.dataset.rasterText==='true'||span.dataset.imageText==='true'){
+        if(!backgroundInfo.flat){showToast('The image behind this text has a complex background. This selection cannot be changed safely.');return;}
+        const r=isolatedSourceLineRect(rec,span,x,y,w,h,fontSize),inv=pdfjsLib.Util.inverseTransform(rec.viewport.transform),point=(px,py)=>[inv[0]*px+inv[2]*py+inv[4],inv[1]*px+inv[3]*py+inv[5]];
+        pixelErase={quad:[...point(r.x,r.y),...point(r.x+r.w,r.y),...point(r.x,r.y+r.h),...point(r.x+r.w,r.y+r.h)],background:sourceBackground};
+        prepareRasterTextPreview(rec,span,r,sourceBackground,sourceColor);
+      }
       // Existing PDF text must never become underlined just because it was clicked.
       // Underline is now a manual user choice only.
       const sourceUnderline=false;
@@ -1066,6 +1138,8 @@
         sourceBackgroundConfidence:backgroundInfo.confidence||0,
         sourceBackgroundDominance:backgroundInfo.dominance||0,
         sourceFontFamily:fontFamily,
+        sourceRenderFont:span.dataset.renderFont||compatibleFont(fontFamily),
+        pixelErase,
         sourceFontWeight:fontWeight,
         sourceFontStyle:fontStyle,
         sourceUnderline:false
@@ -1076,6 +1150,46 @@
       selectObject(rec.pageNum,obj.id);
       startTextEditing(rec,obj,pointerEvent);
       showToast('Edit this text item. Other PDF content keeps its original position.');
+    }
+
+    function prepareRasterTextPreview(rec,span,rect,backgroundColor,textColor){
+      if(!rec.instantRasterPreviewSafe||!rec.sourcePatches||Math.abs(+span.dataset.angle)>.001)return;
+      const index=+span.dataset.sourceIndex;if(rec.sourcePatches.has(index))return;
+      // Only use a quick crop when it cannot touch another text selection.
+      if([...rec.textLayer.children].some(hit=>{
+        if(hit===span)return false;
+        const x=parseFloat(hit.style.left),y=parseFloat(hit.style.top),w=parseFloat(hit.style.width),h=parseFloat(hit.style.height);
+        return rect.x<x+w&&rect.x+rect.w>x&&rect.y<y+h&&rect.y+rect.h>y;
+      }))return;
+      const sx=rec.canvas.width/rec.viewport.width,sy=rec.canvas.height/rec.viewport.height;
+      const x=Math.max(0,Math.floor(rect.x*sx)),y=Math.max(0,Math.floor(rect.y*sy));
+      const w=Math.min(rec.canvas.width,Math.ceil((rect.x+rect.w)*sx))-x,h=Math.min(rec.canvas.height,Math.ceil((rect.y+rect.h)*sy))-y;
+      if(w<1||h<1)return;
+      if([...rec.sourcePatches.values()].some(p=>x<p.x+p.original.width&&x+w>p.x&&y<p.y+p.original.height&&y+h>p.y))return;
+      const original=document.createElement('canvas');original.width=w;original.height=h;original.getContext('2d').drawImage(rec.canvas,x,y,w,h,0,0,w,h);
+      const background=document.createElement('canvas');background.width=w;background.height=h;
+      const before=original.getContext('2d').getImageData(0,0,w,h).data.slice(),data=background.getContext('2d').createImageData(w,h);
+      data.data.set(before);
+      const bg=parseHexRgb(backgroundColor),fg=parseHexRgb(textColor),ink=new Uint8Array(w*h),rules=new Uint8Array(w*h);
+      const contrast=(px,py)=>Math.max(...bg.map((v,k)=>Math.abs(v-before[(py*w+px)*4+k])));
+      for(let py=0;py<h;py++)for(let px=0;px<w;px++){
+        const i=(py*w+px)*4,direction=bg.reduce((sum,v,k)=>sum+(before[i+k]-v)*(fg[k]-v),0);
+        if(contrast(px,py)>30&&direction>0)ink[py*w+px]=1;
+      }
+      // Rules span nearly the entire crop; glyph strokes are shorter.
+      for(let py=0;py<h;py++){let count=0;for(let px=0;px<w;px++)count+=ink[py*w+px];if(count>w*.85)for(let px=0;px<w;px++)rules[py*w+px]=1;}
+      for(let px=0;px<w;px++){let count=0;for(let py=0;py<h;py++)count+=ink[py*w+px];if(count>h*.9)for(let py=0;py<h;py++)rules[py*w+px]=1;}
+      for(let py=0;py<h;py++)for(let px=0;px<w;px++){
+        if(rules[py*w+px]||contrast(px,py)<3)continue;
+        let erase=false;
+        for(let dy=-1;dy<=1&&!erase;dy++)for(let dx=-1;dx<=1&&!erase;dx++){
+          const xx=px+dx,yy=py+dy;if(xx>=0&&xx<w&&yy>=0&&yy<h&&ink[yy*w+xx]&&!rules[yy*w+xx])erase=true;
+        }
+        if(erase){const i=(py*w+px)*4;for(let k=0;k<3;k++)data.data[i+k]=bg[k];}
+      }
+      background.getContext('2d').putImageData(data,0,0);
+      const originalPixels=original.getContext('2d').createImageData(w,h);originalPixels.data.set(before);
+      rec.sourcePatches.set(index,{x,y,original,background,originalPixels,backgroundPixels:data});
     }
 
     function addObject(rec,obj,recordHistory){
@@ -1143,23 +1257,49 @@
     // removal engine. These canvases are preview assets, never export content.
     async function prepareInstantTextPreview(rec){
       rec.sourcePatches=new Map();rec.visibleRemovedSources=new Set();
+      rec.instantRasterPreviewSafe=false;
+      rec.sourceCheckPatches=new Map();
+      const pixels=rec.canvas.getContext('2d'),sxCheck=rec.canvas.width/rec.viewport.width,syCheck=rec.canvas.height/rec.viewport.height;
+      for(const hit of rec.textLayer.children){
+        const quad=JSON.parse(hit.dataset.redactQuad||'null');if(!quad)continue;
+        const margin=Math.max(2,(+hit.dataset.size||12)*.45),xs=[quad[0],quad[2],quad[4],quad[6]],ys=[quad[1],quad[3],quad[5],quad[7]];
+        const x=Math.max(0,Math.floor((Math.min(...xs)-margin)*sxCheck)),y=Math.max(0,Math.floor((Math.min(...ys)-margin)*syCheck));
+        const w=Math.min(rec.canvas.width,Math.ceil((Math.max(...xs)+margin)*sxCheck))-x,h=Math.min(rec.canvas.height,Math.ceil((Math.max(...ys)+margin)*syCheck))-y;
+        if(w>0&&h>0)rec.sourceCheckPatches.set(+hit.dataset.sourceIndex,{x,y,w,h,data:pixels.getImageData(x,y,w,h).data});
+      }
       const ops=await rec.page.getOperatorList(),OPS=pdfjsLib.OPS;
       // Text clipping can affect subsequent graphics: never shortcut that case.
       if(ops.fnArray.some((fn,i)=>fn===OPS.setTextRenderingMode && ops.argsArray[i][0]>=4))return;
+      rec.instantRasterPreviewSafe=true;
       const hits=[...rec.textLayer.children],sx=rec.canvas.width/rec.viewport.width,sy=rec.canvas.height/rec.viewport.height;
       const boxes=hits.map(hit=>({hit,x:parseFloat(hit.style.left),y:parseFloat(hit.style.top),w:parseFloat(hit.style.width),h:parseFloat(hit.style.height),angle:+hit.dataset.angle,margin:Math.max(2,parseFloat(hit.dataset.size||hit.style.height)*.2)}));
       const candidates=boxes.filter(b=>Math.abs(b.angle)<.001 && !boxes.some(other=>other!==b && b.x-b.margin<other.x+other.w+other.margin && b.x+b.w+b.margin>other.x-other.margin && b.y-b.margin<other.y+other.h+other.margin && b.y+b.h+b.margin>other.y-other.margin));
-      if(!candidates.length)return;
+      if(!candidates.length&&!rec.imageHitLayer?.children.length)return;
       const backdrop=document.createElement('canvas');backdrop.width=rec.canvas.width;backdrop.height=rec.canvas.height;
       const textOps=new Set([OPS.showText,OPS.showSpacedText,OPS.nextLineShowText,OPS.nextLineSetSpacingShowText]);
       try{
         await rec.page.render({canvasContext:backdrop.getContext('2d',{alpha:false}),viewport:rec.viewport,transform:[rec.renderDpr,0,0,rec.renderDpr,0,0],operationsFilter:index=>!textOps.has(ops.fnArray[index])}).promise;
+        for(const b of boxes){
+          if(Math.abs(b.angle)>.001)continue;
+          const covered=[...(rec.imageHitLayer?.children||[])].some(hit=>Math.max(0,Math.min(b.x+b.w,+hit.dataset.x + +hit.dataset.w)-Math.max(b.x,+hit.dataset.x))*Math.max(0,Math.min(b.y+b.h,+hit.dataset.y + +hit.dataset.h)-Math.max(b.y,+hit.dataset.y))>b.w*b.h*.3);
+          if(!covered)continue;
+          const info=analyzeTextBackground(rec,b.x,b.y,b.w,b.h);if(!info.flat)continue;
+          const x=Math.max(0,Math.floor(b.x*sx)),y=Math.max(0,Math.floor(b.y*sy)),w=Math.min(rec.canvas.width-x,Math.ceil(b.w*sx)),h=Math.min(rec.canvas.height-y,Math.ceil(b.h*sy));if(w<1||h<1)continue;
+          const before=rec.canvas.getContext('2d').getImageData(x,y,w,h).data,after=backdrop.getContext('2d').getImageData(x,y,w,h).data,bg=parseHexRgb(info.color);let ink=0,remaining=0;
+          const rows=new Uint32Array(h),cols=new Uint32Array(w);
+          for(let i=0;i<after.length;i+=4)if(Math.max(...bg.map((v,k)=>Math.abs(v-after[i+k])))>30){rows[Math.floor(i/4/w)]++;cols[(i/4)%w]++;}
+          for(let i=0;i<before.length;i+=4){if(rows[Math.floor(i/4/w)]>w*.85||cols[(i/4)%w]>h*.85||Math.max(...bg.map((v,k)=>Math.abs(v-before[i+k])))<40)continue;ink++;if(Math.max(...bg.map((v,k)=>Math.abs(v-after[i+k])))>30&&Math.max(...bg.map((v,k)=>Math.abs(before[i+k]-after[i+k])))<25)remaining++;}
+          if(ink>3&&remaining>ink*.45)b.hit.dataset.rasterText='true';
+        }
         for(const b of candidates){
           const x=Math.max(0,Math.floor((b.x-b.margin)*sx)),y=Math.max(0,Math.floor((b.y-b.margin)*sy));
           const w=Math.min(rec.canvas.width,Math.ceil((b.x+b.w+b.margin)*sx))-x,h=Math.min(rec.canvas.height,Math.ceil((b.y+b.h+b.margin)*sy))-y;
           if(w<1||h<1)continue;
           const crop=canvas=>{const c=document.createElement('canvas');c.width=w;c.height=h;c.getContext('2d').drawImage(canvas,x,y,w,h,0,0,w,h);return c;};
-          rec.sourcePatches.set(+b.hit.dataset.sourceIndex,{x,y,original:crop(rec.canvas),background:crop(backdrop)});
+          const original=crop(rec.canvas),background=crop(backdrop);
+          const before=original.getContext('2d').getImageData(0,0,w,h).data,after=background.getContext('2d').getImageData(0,0,w,h).data;
+          if(b.hit.dataset.rasterText==='true'||!before.some((v,i)=>Math.abs(v-after[i])>3)){b.hit.dataset.imageText='true';continue;}
+          rec.sourcePatches.set(+b.hit.dataset.sourceIndex,{x,y,original,background});
         }
       }catch(_){rec.sourcePatches.clear();}
       finally{backdrop.width=backdrop.height=1;}
@@ -1175,14 +1315,14 @@
       for(const index of rec.visibleRemovedSources||[]){
         if(rec.objects.some(o=>o.cover&&o.sourceItemIndex===index&&sourceTextNeedsReplacement(o)))continue;
         const patch=rec.sourcePatches.get(index);
-        if(patch&&!overlapsRemovedImage(patch)){ctx.drawImage(patch.original,patch.x,patch.y);rec.visibleRemovedSources.delete(index);}
+        if(patch&&!overlapsRemovedImage(patch)){if(patch.originalPixels)ctx.putImageData(patch.originalPixels,patch.x,patch.y);else ctx.drawImage(patch.original,patch.x,patch.y);rec.visibleRemovedSources.delete(index);}
       }
       // Image removals can overlap text crops. Preserve the engine result there.
       for(const obj of rec.objects){
         if(!obj.cover||!sourceTextNeedsReplacement(obj)||rec.visibleRemovedSources.has(obj.sourceItemIndex))continue;
         const patch=rec.sourcePatches.get(obj.sourceItemIndex);if(!patch)continue;
         if(overlapsRemovedImage(patch))continue;
-        ctx.drawImage(patch.background,patch.x,patch.y);rec.visibleRemovedSources.add(obj.sourceItemIndex);
+        if(patch.backgroundPixels)ctx.putImageData(patch.backgroundPixels,patch.x,patch.y);else ctx.drawImage(patch.background,patch.x,patch.y);rec.visibleRemovedSources.add(obj.sourceItemIndex);
       }
     }
 
@@ -1221,6 +1361,7 @@
       try{
         let doc;
         if(job.items.length||job.images.length){
+          if(job.items.some(item=>item.pixelErase))await cacheRasterImages(rec);
           const response=await engineRequest('remove',{jobs:[job],onlyPage:rec.originalPageNum});
           if(generation!==documentGeneration||JSON.stringify(jobForPage(rec))!==signature)return;
           task=pdfjsLib.getDocument(pdfOptions(response.bytes));doc=await task.promise;
@@ -1230,6 +1371,7 @@
         const render=page.render({canvasContext:canvas.getContext('2d',{alpha:false}),viewport:page.getViewport({scale:rec.viewport.scale}),transform:[rec.renderDpr,0,0,rec.renderDpr,0,0]});
         await render.promise;
         if(generation!==documentGeneration||JSON.stringify(jobForPage(rec))!==signature)return;
+        verifyVisibleTextRemoval(rec,canvas,job);
         rec.canvas.getContext('2d').drawImage(canvas,0,0);
         rec.visibleRemovedSources=new Set(rec.objects.filter(sourceTextNeedsReplacement).map(o=>o.sourceItemIndex));
         syncSourceTextVisibility(rec);
@@ -1243,11 +1385,33 @@
         rec.previewRunning=false;
       }
     }
+    function verifyVisibleTextRemoval(rec,canvas,job){
+      const ctx=canvas.getContext('2d');
+      for(const item of job.items){
+        const patch=rec.sourceCheckPatches?.get(item.sourceItemIndex);if(!patch)continue;
+        const after=ctx.getImageData(patch.x,patch.y,patch.w,patch.h).data;
+        if(!patch.data.some((v,i)=>Math.abs(v-after[i])>3))throw new Error('The visible letters were not removed. This may be image-based text. Your original text has been kept.');
+      }
+    }
+    async function verifyPendingSourceChanges(){
+      for(const key of pageOrder){
+        const rec=pageRecords.get(key);if(!rec||rec.isBlank)continue;
+        let job=jobForPage(rec);if(!job.items.length&&!job.images.length)continue;
+        const expectedSignature=JSON.stringify(job);
+        await hydratePage(rec);if(!rec.hydrated)throw new Error('The edited page could not be checked. Please try again.');
+        clearTimeout(rec.previewTimer);await rec.previewQueue;
+        job=jobForPage(rec);const signature=JSON.stringify(job);
+        if(rec.previewError||signature!==expectedSignature)throw new Error('The last text or image removal could not be verified. Please review the page before downloading.');
+        if(rec.previewSignature!==signature)await renderRemovalPreview(rec,job,signature);
+        if(rec.previewError||rec.previewSignature!==signature)throw new Error('The last text or image removal could not be verified. Please review the page before downloading.');
+      }
+    }
     function rollbackUnsafeRemoval(rec){
       finishTextEditing();
       for(const obj of rec.objects){
         if(obj.type==='text'&&obj.cover&&sourceTextNeedsReplacement(obj)){
           const safe=rec.safeSourceObjects?.find(o=>o.id===obj.id);
+          delete obj.replacementPositioned;delete obj.textScaleX;
           if(safe)Object.assign(obj,deep(safe));else Object.assign(obj,{text:obj.originalText,deleted:false,x:obj.sourceDisplayX,y:obj.sourceDisplayY,fontSize:obj.sourceFontSize,fontFamily:obj.sourceFontFamily,fontWeight:obj.sourceFontWeight,fontStyle:obj.sourceFontStyle,color:obj.sourceColor,underline:false});
           const el=rec.objectLayer.querySelector(`[data-id="${obj.id}"]`);if(el)el.textContent=obj.text;applyObjectStyle(rec,obj);
         }else if(obj.type==='source-image'){obj.deleted=rec.safeSourceObjects?.find(o=>o.id===obj.id)?.deleted||false;applyObjectStyle(rec,obj);}
@@ -1259,8 +1423,10 @@
     function applyObjectStyle(rec,obj,el=null){
       el = el || rec.objectLayer.querySelector(`[data-id="${obj.id}"]`); if(!el)return;
       if(obj.type==='text'&&!obj.deleted&&(!obj.cover||sourceTextNeedsReplacement(obj))){
-        obj.fontFamily=compatibleFont(obj.fontFamily);
-        if(/[^\u0000-\u024f\u2000-\u206f]/.test(obj.text||''))obj.fontFamily='RiloUnicode';
+        obj.fontFamily=obj.cover&&obj.fontFamily===obj.sourceFontFamily?(obj.sourceRenderFont||compatibleFont(obj.fontFamily)):compatibleFont(obj.fontFamily);
+        const originalFont=sourcePdfFonts.get(obj.fontFamily);
+        if(originalFont&&[...String(obj.text)].some(c=>c!=='\n'&&!originalFont.supported.has(c.codePointAt(0)))){obj.fontFamily=originalFont.fallback;delete obj.textScaleX;}
+        if(!sourcePdfFonts.has(obj.fontFamily)&&/[^\u0000-\u024f\u2000-\u206f]/.test(obj.text||''))obj.fontFamily='RiloUnicode';
         if(obj.cover&&!obj.replacementPositioned&&obj.sourceBaseline){
           const offset=textBaselineOffset(obj),angle=obj.angle||0;
           if(nearEqual(obj.x,obj.sourceDisplayX)&&nearEqual(obj.y,obj.sourceDisplayY)){
@@ -1268,9 +1434,16 @@
           }
           obj.replacementPositioned=true;
         }
+        if(obj.cover&&obj.textScaleX==null){
+          const ctx=document.createElement('canvas').getContext('2d');
+          ctx.font=`${obj.sourceFontStyle||'normal'} ${obj.sourceFontWeight||400} ${obj.sourceFontSize}px ${obj.fontFamily}`;
+          const width=ctx.measureText(obj.originalText||'').width;
+          obj.textScaleX=width>0?clamp(obj.sourceW/width,.15,6):1;
+        }
       }
-      el.style.transform=obj.angle?`rotate(${obj.angle}rad)`:'';el.style.transformOrigin='left top';
-      el.style.left=obj.x+'px'; el.style.top=obj.y+'px'; el.style.width=Math.max(obj.type==='text'?2:6,obj.w)+'px'; el.style.height=Math.max(obj.type==='text'?2:6,obj.h)+'px';
+      const textScale=obj.type==='text'?(obj.textScaleX||1):1;
+      el.style.transform=(obj.angle?`rotate(${obj.angle}rad) `:'')+(textScale!==1?`scaleX(${textScale})`:'');el.style.transformOrigin='left top';
+      el.style.left=obj.x+'px'; el.style.top=obj.y+'px'; el.style.width=Math.max(obj.type==='text'?2:6,obj.w/textScale)+'px'; el.style.height=Math.max(obj.type==='text'?2:6,obj.h)+'px';
       if(obj.type==='text'){
         // For untouched source PDF text, show the ORIGINAL canvas glyphs rather
         // than a browser-font copy. This makes selecting/clicking text visually
@@ -1292,6 +1465,7 @@
         el.style.borderRadius=obj.kind==='circle'?'50%':'0';
       } else if(obj.type==='source-image'){
         el.style.background='transparent';
+        syncSourceImageHits(rec);
         requestSourceTextPreview(rec);
         el.style.border='0';
       }
@@ -1465,9 +1639,9 @@
 
       // Do not stop the box at the page edge: if text gets larger near an
       // edge, the box should still surround it. The PDF page clips overflow.
-      obj.w=Math.max(obj.isPlaceholder?170:8,Math.min(10000,naturalW));
+      obj.w=Math.max(obj.isPlaceholder?170:8,Math.min(10000,naturalW*(obj.textScaleX||1)));
       obj.h=Math.max(8,Math.min(10000,naturalH));
-      el.style.width=obj.w+'px';
+      el.style.width=(obj.w/(obj.textScaleX||1))+'px';
       el.style.height=obj.h+'px';
       updateTextMoveHandle(rec,obj);
     }
@@ -1592,6 +1766,7 @@
       const s=getSelected();if(!s)return;
       const {rec,obj}=s;
       const before=deep(obj);
+      if(obj.type==='text'&&field==='fontFamily')obj.textScaleX=1;
       obj[field]=value;
       applyObjectStyle(rec,obj);
       // Text boxes should follow the visible text. When font size/family/weight/style
@@ -1780,6 +1955,7 @@
           const rec=pageBank.get(p.key);if(!rec)continue;
           rec.rotation=p.rotation;rec.objects=p.objects.map(deep);pageRecords.set(p.key,rec);workspace.appendChild(rec.holder);
           rec.objectLayer.replaceChildren();for(const hit of rec.textLayer.children)hit.style.pointerEvents='auto';
+          syncSourceImageHits(rec);
           rec.objects.forEach(o=>{if(o.cover){const hit=[...rec.textLayer.children].find(h=>+h.dataset.sourceIndex===o.sourceItemIndex);if(hit){o.sourceHitIndex=[...rec.textLayer.children].indexOf(hit);hit.style.pointerEvents='none';}}renderObject(rec,o);});
           updatePageZoom(rec);pageObserver?.observe(rec.holder);requestSourceTextPreview(rec);
         }
@@ -1936,7 +2112,7 @@
         ctx.save();ctx.scale(scale,scale);
         for(const o of rec.objects){
           if(o.deleted||o.isPlaceholder||(o.cover&&!sourceTextNeedsReplacement(o)))continue;
-          if(o.type==='text'){ctx.save();ctx.translate(o.x,o.y);ctx.rotate(o.angle||0);ctx.fillStyle=o.color;ctx.font=`${o.fontStyle||'normal'} ${o.fontWeight||400} ${o.fontSize}px ${compatibleFont(o.fontFamily)}`;ctx.textBaseline='alphabetic';String(o.text).split('\n').forEach((line,i)=>ctx.fillText(line,0,textBaselineOffset(o)+i*o.fontSize*1.16));ctx.restore();}
+          if(o.type==='text'){ctx.save();ctx.translate(o.x,o.y);ctx.rotate(o.angle||0);ctx.scale(o.textScaleX||1,1);ctx.fillStyle=o.color;ctx.font=`${o.fontStyle||'normal'} ${o.fontWeight||400} ${o.fontSize}px ${compatibleFont(o.fontFamily)}`;ctx.textBaseline='alphabetic';String(o.text).split('\n').forEach((line,i)=>ctx.fillText(line,0,textBaselineOffset(o)+i*o.fontSize*1.16));ctx.restore();}
           else if(o.type==='shape'){ctx.beginPath();if(o.kind==='circle')ctx.ellipse(o.x+o.w/2,o.y+o.h/2,o.w/2,o.h/2,0,0,2*Math.PI);else ctx.rect(o.x,o.y,o.w,o.h);if(o.fill&&o.fill!=='transparent'){ctx.fillStyle=o.fill;ctx.fill();}if(o.border&&o.border!=='transparent'&&o.borderWidth){ctx.strokeStyle=o.border;ctx.lineWidth=o.borderWidth;ctx.stroke();}}
           else if(o.type==='image'){const image=new Image();await new Promise(resolve=>{image.onload=image.onerror=resolve;image.src=o.src;});if(image.naturalWidth){ctx.save();ctx.translate(o.x,o.y);ctx.rotate(o.angle||0);ctx.drawImage(image,0,0,o.w,o.h);ctx.restore();}}
         }
@@ -2052,7 +2228,26 @@
       }await engineReady;
     }
     async function engineRequest(type,data){await ensureEngine();return rawEngineRequest(type,data);}
-    function jobForPage(rec){return {pageNumber:rec.originalPageNum,width:rec.viewport.width,height:rec.viewport.height,items:rec.objects.filter(sourceTextNeedsReplacement).map(o=>({sourcePdfPoint:o.sourcePdfPoint,sourceRedactQuad:o.sourceRedactQuad,originalText:o.originalText})),images:rec.objects.filter(o=>o.type==='source-image'&&o.deleted).map(o=>({x:o.x,y:o.y,w:o.w,h:o.h,sourcePdfQuad:o.sourcePdfQuad,sourceImageOccurrence:o.sourceImageOccurrence}))};}
+    async function cacheRasterImages(rec){
+      await ensureEngine();if(rec.rasterCacheWorker===engineWorker)return;
+      const images=[];
+      // PDF.js uses different object IDs for display and operator-list intents.
+      // Use the already rendered display objects for the original image pixels.
+      const display=[...(rec.page._intentStates?.values()||[])].find(state=>state.displayReadyCapability)?.operatorList;
+      const displayIds=display?display.argsArray.filter((args,i)=>[pdfjsLib.OPS.paintImageXObject,pdfjsLib.OPS.paintInlineImageXObject,pdfjsLib.OPS.paintJpegXObject].includes(display.fnArray[i])).map(args=>args[0]):[];
+      for(const hit of rec.imageHitLayer.children){
+        if(!hit.dataset.imageId)continue;
+        const id=rec.page.objs.has(hit.dataset.imageId)?hit.dataset.imageId:displayIds[+hit.dataset.imageOrdinal],store=String(id).startsWith('g_')?rec.page.commonObjs:rec.page.objs;
+        if(!store.has(id))continue;const image=store.get(id);if(!image)continue;
+        const W=image.width,H=image.height;let pixels;
+        if(image.bitmap){const canvas=document.createElement('canvas');canvas.width=W;canvas.height=H;canvas.getContext('2d').drawImage(image.bitmap,0,0);pixels=canvas.getContext('2d').getImageData(0,0,W,H).data;canvas.width=canvas.height=1;}
+        else if(image.data?.length===W*H*4)pixels=image.data.slice();
+        else if(image.data?.length===W*H*3){pixels=new Uint8ClampedArray(W*H*4);for(let i=0,j=0;i<image.data.length;i+=3,j+=4){pixels[j]=image.data[i];pixels[j+1]=image.data[i+1];pixels[j+2]=image.data[i+2];pixels[j+3]=255;}}
+        if(pixels)images.push({quad:JSON.parse(hit.dataset.pdfQuad),occurrence:+hit.dataset.occurrence,width:W,height:H,pixels});
+      }
+      if(images.length)await engineRequest('raster',{pageNumber:rec.originalPageNum,images});rec.rasterCacheWorker=engineWorker;
+    }
+    function jobForPage(rec){return {pageNumber:rec.originalPageNum,width:rec.viewport.width,height:rec.viewport.height,items:rec.objects.filter(sourceTextNeedsReplacement).map(o=>({sourcePdfPoint:o.sourcePdfPoint,sourceRedactQuad:o.sourceRedactQuad,sourceItemIndex:o.sourceItemIndex,originalText:o.originalText,pixelErase:o.pixelErase||null})),images:rec.objects.filter(o=>o.type==='source-image'&&o.deleted).map(o=>({x:o.x,y:o.y,w:o.w,h:o.h,sourcePdfQuad:o.sourcePdfQuad,sourceImageOccurrence:o.sourceImageOccurrence}))};}
     async function buildPermanentlyRedactedBase(){
       const jobs=pageOrder.map(k=>pageRecords.get(k)).filter(r=>!r.isBlank).map(jobForPage).filter(j=>j.items.length||j.images.length);
       permanentRedactionBaseActive=!!jobs.length;
@@ -2090,6 +2285,7 @@
       return a+(obj.fontSize*1.16-a-d)/2;
     }
     function compatibleFont(family){
+      if(/^RiloPdf\d+_\d+$/.test(family||''))return family;
       if(/^Rilo(Sans|Serif|Mono|Unicode|Bookman|Palatino|Schoolbook|Narrow)$/.test(family||''))return family;
       const name=String(family||'').toLowerCase();
       if(/bookman/.test(name))return 'RiloBookman';
@@ -2104,6 +2300,13 @@
     async function fontBytes(path){if(!fontBytesCache.has(path))fontBytesCache.set(path,fetch(assetUrl(path)).then(r=>{if(!r.ok)throw new Error('An export font could not load. Please reload and try again.');return r.arrayBuffer();}));return fontBytesCache.get(path);}
     async function exportFont(out,obj){
       if(!out.riloFonts){out.riloFonts=new Map();out.registerFontkit(window.fontkit);}
+      const source=sourcePdfFonts.get(obj.fontFamily);
+      if(source){
+        if([...String(obj.text)].every(c=>c==='\n'||source.supported.has(c.codePointAt(0)))){
+          if(!out.riloFonts.has(obj.fontFamily))out.riloFonts.set(obj.fontFamily,out.embedFont(source.bytes,{subset:false}));return out.riloFonts.get(obj.fontFamily);
+        }
+        obj.fontFamily=source.fallback;
+      }
       const family=compatibleFont(obj.fontFamily),bold=Number(obj.fontWeight)>=600||obj.fontWeight==='bold',italic=obj.fontStyle==='italic';
       const customFonts={
         RiloBookman:{stem:'URWBookman',regular:'Light',bold:'Demi',italic:'LightItalic',boldItalic:'DemiItalic'},
@@ -2148,6 +2351,14 @@
       const metric=ctx.measureText('Hg'),ascent=metric.fontBoundingBoxAscent||obj.fontSize*.8,descent=metric.fontBoundingBoxDescent||obj.fontSize*.2;
       const baseline=textBaselineOffset(obj);
       const lines=String(obj.text).replace(/\r/g,'').split('\n'),angle=obj.angle||0,cos=Math.cos(angle),sin=Math.sin(angle);
+      const scale=obj.textScaleX||1;
+      if(scale!==1){
+        page.pushOperators(PDFLib.pushGraphicsState(),PDFLib.concatTransformationMatrix(cos*scale,-sin*scale,sin,cos,obj.x,H-obj.y));
+        lines.forEach((line,i)=>{const offset=baseline+i*obj.fontSize*1.16;
+          page.drawText(line,{x:0,y:-offset,size:obj.fontSize,font,color:pdfRgb(obj.color),lineHeight:obj.fontSize*1.16});
+          if(obj.underline&&line)page.drawLine({start:{x:0,y:-offset-obj.fontSize*.12},end:{x:font.widthOfTextAtSize(line,obj.fontSize),y:-offset-obj.fontSize*.12},thickness:obj.fontSize*.065,color:pdfRgb(obj.color)});
+        });page.pushOperators(PDFLib.popGraphicsState());return;
+      }
       lines.forEach((line,i)=>{
         const offset=baseline+i*obj.fontSize*1.16,x=obj.x-sin*offset,y=H-(obj.y+cos*offset);
         page.drawText(line,{x,y,size:obj.fontSize,font,color:pdfRgb(obj.color),rotate:PDFLib.radians(-angle),lineHeight:obj.fontSize*1.16});
@@ -2163,6 +2374,7 @@
       finishTextEditing();exportInProgress=true;clearSelection();setBusy(true,'Building high-quality PDF…');
       document.body.classList.add('exporting');
       try{
+        await verifyPendingSourceChanges();
         const secureBase=await buildPermanentlyRedactedBase();
         await ensureWritingTools();
         const src=await PDFLib.PDFDocument.load(secureBase);
