@@ -28,6 +28,7 @@
   <main id="startView">
     <div class="start-top">
       <div class="brand">PDF<span>Rilo</span></div>
+      <button class="top-action start-suggestion" type="button" data-open-suggestion>Contact / Suggestion</button>
       <h1 class="start-title">Free Online PDF Editor</h1>
       <div class="start-sub">Edit PDF text, images and pages directly in your browser.</div>
     </div>
@@ -58,6 +59,8 @@
       <div class="topline">
         <a class="mini-brand" href="index.html" aria-label="PDFRilo homepage">PDF<span>Rilo</span></a>
         <div class="file-name" id="fileName"></div>
+        <button class="top-action" id="renamePdfBtn" type="button" title="Change PDF filename and title">Rename</button>
+        <button class="top-action" type="button" data-open-suggestion>Contact / Suggestion</button>
         <button class="top-action" id="newPdfBtn">Open PDF</button>
         <button class="top-action" id="blankPdfBtnTop">Blank PDF</button>
         <button class="top-action primary" id="downloadBtnTop">Download PDF</button>
@@ -171,6 +174,8 @@
 
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
   <dialog id="errorDialog"><h2 id="errorTitle">Unable to open PDF</h2><p id="errorMessage"></p><button id="closeError" class="top-action primary">OK</button></dialog>
+  <dialog id="renamePdfDialog" aria-labelledby="renamePdfTitle"><h2 id="renamePdfTitle">Rename PDF</h2><form id="renamePdfForm"><label for="pdfNameInput">PDF filename</label><input id="pdfNameInput" name="filename" type="text" maxlength="240" required autocomplete="off"><p class="form-note">This name is used for the downloaded file and its PDF title.</p><div class="dialog-actions"><button class="top-action" id="cancelRenamePdf" type="button">Cancel</button><button class="top-action primary" type="submit">Save name</button></div></form></dialog>
+  <dialog id="suggestionDialog" aria-labelledby="suggestionDialogTitle"><div class="suggestion-heading"><h2 id="suggestionDialogTitle">Contact / Suggestion</h2><button class="top-action" id="closeSuggestion" type="button">Close</button></div><p>Share a suggestion or report a problem. Your PDF stays open while you write.</p><div id="suggestionFormSlot"></div></dialog>
   <div class="busy hidden" id="busy" role="status" aria-live="polite" aria-label="Working"><div class="spinner"></div><div id="busyText">Loading PDF…</div><div class="busy-progress hidden" id="busyProgress"><div class="busy-progress-fill" id="busyProgressFill"></div></div><div class="busy-percent hidden" id="busyPercent">0%</div></div>
 
   
