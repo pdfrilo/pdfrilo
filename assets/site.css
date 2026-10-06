@@ -40,6 +40,12 @@
     .file-name{max-width:38vw;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#697586;font-size:12.5px}
     .top-action{border:1px solid var(--line);background:#fff;color:#334155;border-radius:8px;padding:7px 10px;font-size:13px;font-weight:700}
     .top-action.primary{background:var(--blue);border-color:var(--blue);color:#fff}
+    .start-suggestion{margin-top:14px}
+    #renamePdfForm{display:grid;gap:12px}#pdfNameInput{width:100%;padding:11px;border:1px solid #bac8d9;border-radius:8px;font:inherit;color:#1f2937}
+    .dialog-actions{display:flex;justify-content:flex-end;gap:8px}
+    #suggestionDialog{width:min(92vw,600px);max-height:85vh;overflow:auto}
+    .suggestion-heading{display:flex;align-items:center;justify-content:space-between;gap:12px}.suggestion-heading h2{margin:0}
+    #suggestionDialog .support-form{margin-top:16px}
     .top-action:hover{border-color:#b9c6d3}
     .top-action.primary:hover{background:var(--blue2)}
 

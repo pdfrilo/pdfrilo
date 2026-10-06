@@ -3,6 +3,17 @@
 const PDFRILO_SUPPORT_ENDPOINT = '';
 for (const el of document.querySelectorAll('.year')) el.textContent = new Date().getFullYear();
 const form = document.querySelector('#supportForm');
+const suggestionDialog = document.querySelector('#suggestionDialog');
+if (form && suggestionDialog) {
+  const originalParent=form.parentNode,originalNext=form.nextSibling;
+  for (const button of document.querySelectorAll('[data-open-suggestion]')) button.addEventListener('click',()=>{
+    if(suggestionDialog.open)return;
+    document.querySelector('#suggestionFormSlot').appendChild(form);
+    suggestionDialog.showModal();form.querySelector('textarea[name="problem"]').focus();
+  });
+  document.querySelector('#closeSuggestion').addEventListener('click',()=>suggestionDialog.close());
+  suggestionDialog.addEventListener('close',()=>originalParent.insertBefore(form,originalNext));
+}
 if (form) {
   const status = document.querySelector('#reportStatus'), report = document.querySelector('#preparedReport'), copy = document.querySelector('#copyReport');
   form.addEventListener('submit', async e => {
@@ -17,4 +28,3 @@ if (form) {
   });
   copy.addEventListener('click',async()=>{try{await navigator.clipboard.writeText(report.value);status.textContent='Report copied. It has not been sent.';}catch{report.focus();report.select();status.textContent='Select and copy the report above. It has not been sent.';}});
 }
-
