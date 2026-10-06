@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#0ea5e9" />
+  <title>Free Online PDF Editor – Edit PDF Text &amp; Images | PDFRilo</title>
+  <meta name="description" content="Edit PDF files online with PDFRilo. Edit text, add images, organize pages and download your edited PDF securely with local browser processing.">
+  <link rel="canonical" href="./">
+  <link rel="icon" href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCI+PHJlY3Qgd2lkdGg9IjY0IiBoZWlnaHQ9IjY0IiByeD0iMTQiIGZpbGw9IiMwYjc1ZjYiLz48dGV4dCB4PSIzMiIgeT0iNDciIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtZmFtaWx5PSJBcmlhbCxzYW5zLXNlcmlmIiBmb250LXNpemU9IjQ0IiBmb250LXdlaWdodD0iNzAwIiBmaWxsPSJ3aGl0ZSI+UDwvdGV4dD48L3N2Zz4=" type="image/svg+xml">
+  <meta property="og:title" content="Free Online PDF Editor | PDFRilo">
+  <meta property="og:description" content="Edit PDF text, images and pages directly in your browser.">
+  <meta property="og:url" content="./">
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="PDFRilo">
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="Free Online PDF Editor | PDFRilo">
+  <meta name="twitter:description" content="Edit PDF text, images and pages directly in your browser.">
+  <!-- Add og:image and twitter:image when a final social image is available. -->
+  <script type="application/ld+json">{"@context":"https://schema.org","@graph":[{"@type":"WebSite","name":"PDFRilo","url":"./"},{"@type":"WebApplication","name":"PDFRilo","url":"./","applicationCategory":"UtilitiesApplication","operatingSystem":"Web browser","browserRequirements":"Requires JavaScript and WebAssembly","description":"Free PDF editor with local browser processing."}]}</script>
+  <link rel="stylesheet" href="assets/site.css">
+  <!-- Fonts are bundled and loaded with the PDF tools. -->
+</head>
+<body>
+  <input id="fileInput" type="file" accept="application/pdf,.pdf" />
+  <input id="imageInput" type="file" accept="image/png,image/jpeg,image/webp" />
+
+  <main id="startView">
+    <div class="start-top">
+      <div class="brand">PDF<span>Rilo</span></div>
+      <h1 class="start-title">Free Online PDF Editor</h1>
+      <div class="start-sub">Edit PDF text, images and pages directly in your browser.</div>
+    </div>
+    <div class="start-stage" id="dropZone">
+      <div class="upload-card">
+        <button class="upload-btn" id="uploadBtn">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.8" d="M7 3h7l4 4v14H7z"/><path fill="none" stroke="currentColor" stroke-width="1.8" d="M14 3v5h5M12 17V10m0 0-3 3m3-3 3 3"/></svg>
+          Upload PDF
+        </button>
+        <p class="file-limits">Maximum 50 MB · Maximum 200 pages</p><div class="drop-copy">or drag &amp; drop a PDF here</div>
+        <button class="blank-btn" id="startBlankBtn" type="button">+ Start with blank PDF</button>
+        <div class="privacy"><strong>Your PDF stays on your device.</strong><br>Documents are processed locally in your browser and are not uploaded to our servers.</div>
+      </div>
+    </div>
+    <section class="public-content" aria-labelledby="featuresTitle">
+      <h2 id="featuresTitle">Your PDF, ready for the next step</h2>
+      <p>Update existing text, add new text and images, change font size and color, and draw rectangles or ovals. Insert blank pages, reorder or rotate pages, then download your edited PDF.</p>
+      <div class="feature-grid"><div><h3>Edit with confidence</h3><p>Undo and redo your changes. Your original file stays on your device, so you can always keep a separate copy.</p></div><div><h3>Keep documents private</h3><p>PDF editing and export happen in your browser. The editor does not send your document contents to our servers.</p></div><div><h3>Preserve PDF quality</h3><p>Untouched page content retains its original quality. Added and edited text is exported as selectable PDF text where supported.</p></div></div>
+    </section>
+    <section class="public-content support-section" aria-labelledby="supportTitle"><h2 id="supportTitle">Having trouble editing a PDF?</h2><p>Tell us what happened so we can improve PDFRilo. Describe the problem without including sensitive document contents.</p>
+      <form class="support-form" id="supportForm"><div class="form-grid"><label>Name <span>(optional)</span><input name="name" autocomplete="name" maxlength="100"></label><label>Email <span>(if you want a reply)</span><input name="email" type="email" autocomplete="email" maxlength="254"></label></div><label>Problem description<textarea name="problem" required rows="4" maxlength="5000"></textarea></label><label>Browser / device <span>(optional)</span><input name="device" placeholder="Chrome / Windows" maxlength="200"></label><p class="form-note">Support submission is not connected yet. You can prepare and copy a report; it will not be sent.</p><button class="top-action primary" type="submit">Prepare problem report</button><p id="reportStatus" role="status"></p><textarea id="preparedReport" class="hidden" readonly aria-label="Prepared problem report"></textarea><button id="copyReport" class="top-action hidden" type="button">Copy report</button><a href="contact.html">Contact PDFRilo</a></form>
+    </section>
+    <footer class="site-footer"><strong>PDFRilo</strong><nav aria-label="Footer"><a href="privacy.html">Privacy Policy</a><a href="terms.html">Terms of Service</a><a href="contact.html">Contact</a></nav><small>© <span class="year">2026</span> PDFRilo. All rights reserved.</small></footer>
+  </main>
+
+  <section id="editorView" class="hidden">
+    <header class="topbar">
+      <div class="topline">
+        <a class="mini-brand" href="index.html" aria-label="PDFRilo homepage">PDF<span>Rilo</span></a>
+        <div class="file-name" id="fileName"></div>
+        <button class="top-action" id="newPdfBtn">Open PDF</button>
+        <button class="top-action" id="blankPdfBtnTop">Blank PDF</button>
+        <button class="top-action primary" id="downloadBtnTop">Download PDF</button>
+      </div>
+      <div class="toolbar-wrap">
+        <div class="toolbar" id="toolbar">
+          <button class="tool" data-tool="text" title="Edit existing PDF text">
+            <svg viewBox="0 0 24 24"><path d="M4 5h16M8 5v14M16 5v14M6 19h4M14 19h4"/></svg>Edit Text
+          </button>
+          <button class="tool" data-tool="addtext" title="Add new text anywhere on the PDF">
+            <svg viewBox="0 0 24 24"><path d="M5 5h10M10 5v14M7 19h6M18 8v8M14 12h8"/></svg>Add Text
+          </button>
+          <button class="tool" data-tool="image" title="Add image">
+            <svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m4 18 5-5 3 3 3-4 5 6"/></svg>Images
+          </button>
+          <button class="tool" data-tool="shape" id="shapeTool" title="Add rectangle">
+            <svg viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="14" rx="1"/></svg>Shapes <span class="small-caret">▼</span>
+          </button>
+          <button class="tool" data-tool="undo" id="undoBtn" title="Undo last change">
+            <svg viewBox="0 0 24 24"><path d="M9 8 4 12l5 4"/><path d="M5 12h8a6 6 0 0 1 6 6"/></svg>Undo
+          </button>
+          <button class="tool" data-tool="redo" id="redoBtn" title="Redo (Ctrl/Cmd+Shift+Z)">↪ Redo</button>
+          <button class="tool" id="togglePages" type="button" title="Show or hide page thumbnails" aria-controls="pagePanel" aria-expanded="false">Thumbnails</button>
+          <button class="tool" data-tool="zoomout" title="Zoom out">
+            <svg viewBox="0 0 24 24"><circle cx="10" cy="10" r="6"/><path d="m15 15 5 5M7 10h6"/></svg>Zoom −
+          </button>
+          <button class="tool" data-tool="zoomin" title="Zoom in">
+            <svg viewBox="0 0 24 24"><circle cx="10" cy="10" r="6"/><path d="m15 15 5 5M10 7v6M7 10h6"/></svg>Zoom +
+          </button>
+          <button class="tool" id="toggleLayersBtn" type="button" title="Show or hide layers">
+            <svg viewBox="0 0 24 24"><path d="m12 3 8 4-8 4-8-4 8-4Z"/><path d="m4 12 8 4 8-4"/><path d="m4 17 8 4 8-4"/></svg>Layers
+          </button>
+        </div>
+      </div>
+      <div class="propertybar" id="propertybar">
+        <div class="prop-group" id="textProps">
+          <label for="fontFamilySelect">Font</label>
+          <select id="fontFamilySelect" title="Font family">
+            <option value="">Current PDF font</option><option value="RiloSans">Sans (Arial compatible)</option><option value="RiloSerif">Serif (Times compatible)</option><option value="RiloMono">Monospace (Courier compatible)</option><option value="RiloUnicode">Unicode (DejaVu Sans)</option><option value="RiloBookman">Bookman</option><option value="RiloPalatino">Palatino compatible</option><option value="RiloSchoolbook">Century Schoolbook compatible</option><option value="RiloNarrow">Arial Narrow compatible</option>
+            <option value="Arial, sans-serif">Arial</option>
+            <option value="Helvetica, Arial, sans-serif">Helvetica</option>
+            <option value="'Times New Roman', Times, serif">Times New Roman</option>
+            <option value="Georgia, serif">Georgia</option>
+            <option value="Verdana, sans-serif">Verdana</option>
+            <option value="Tahoma, sans-serif">Tahoma</option>
+            <option value="'Trebuchet MS', sans-serif">Trebuchet MS</option>
+            <option value="'Courier New', Courier, monospace">Courier New</option>
+          </select>
+          <label for="fontSizeInput" class="size-label">Size</label><input id="fontSizeInput" type="number" min="6" max="160" step="1" value="20">
+          <label for="textColorInput">Color</label><input id="textColorInput" type="color" value="#000000">
+          <button class="prop-btn" id="boldBtn" title="Bold">B</button>
+          <button class="prop-btn" id="underlineBtn" title="Underline"><span style="text-decoration:underline;text-underline-offset:2px">U</span></button>
+          <button class="prop-btn" id="copyTextBtn" title="Copy this text with the same style directly below">Copy ↓</button>
+          <span class="font-readout" id="fontReadout"></span>
+          <span class="font-readout">Shift+Enter = new line</span>
+        </div>
+        <div class="prop-group" id="imageProps">
+          <button class="prop-btn" id="addImageBtn">+ Add new image</button>
+          <span class="font-readout" id="imageHint">Click an existing PDF image to select it</span>
+          <div class="image-library" id="savedImages"><div class="image-chip empty">Uploaded images will appear here</div></div>
+        </div>
+        <div class="prop-group" id="shapeProps">
+          <label for="shapeKindSelect">Type</label><select id="shapeKindSelect"><option value="rectangle">Rectangle</option><option value="circle">Circle / Oval</option></select>
+          <label for="fillColorInput">Fill</label><input id="fillColorInput" type="color" value="#ffffff">
+          <button class="prop-btn" id="noFillBtn">No fill</button>
+          <button class="prop-btn" id="paletteBtn" title="Color palette">Palette</button>
+          <label for="borderColorInput">Border</label><input id="borderColorInput" type="color" value="#0b75f6">
+          <button class="prop-btn" id="noBorderBtn">No border</button>
+          <label for="borderWidthInput">Width</label><input id="borderWidthInput" type="number" min="0" max="20" step="1" value="2">
+        </div>
+        <button class="prop-btn danger" id="deleteBtn">Delete</button>
+      </div>
+    </header>
+
+    <div id="workspace" role="region" aria-label="PDF pages"></div>
+    <aside id="pagePanel" class="page-panel hidden" aria-label="Page navigation"><div class="panel-title"><strong>Pages</strong><button id="closePages" class="prop-btn" type="button">Hide</button></div><p class="page-panel-hint">Click to jump. Drag to reorder.</p><div id="pageThumbnails"></div></aside>
+    <aside class="layers-panel" id="layersPanel">
+      <div class="layers-head">
+        <div><strong>Layers</strong><div class="layers-sub" id="layersSub">Current page objects</div></div>
+        <button class="prop-btn" id="closeLayersBtn" type="button">Hide</button>
+      </div>
+      <div class="layers-body">
+        <div class="layers-empty" id="layersEmpty">No changes on this page yet.</div>
+        <div id="layersList"></div>
+      </div>
+    </aside>
+  </section>
+
+  <div class="shape-menu" id="shapeMenu">
+    <button class="shape-choice active" type="button" data-shape-kind="rectangle"><span class="shape-icon"></span>Rectangle</button>
+    <button class="shape-choice" type="button" data-shape-kind="circle"><span class="shape-icon circle"></span>Circle / Oval</button>
+  </div>
+
+  <div class="palette" id="palette">
+    <div class="palette-title">Shape color</div>
+    <div class="swatches" id="swatches"></div>
+    <div class="palette-custom"><span>Custom</span><input id="paletteCustom" type="color" value="#ffffff"></div>
+  </div>
+
+  <div class="after-download hidden" id="afterDownload">
+    <div class="after-download-card">
+      <h3>PDF downloaded</h3>
+      <p>Your edited PDF is ready. You can continue editing, open another PDF, or start a blank document.</p>
+      <div class="after-download-actions">
+        <button type="button" id="continueEditingBtn">Continue editing</button>
+        <button type="button" id="afterOpenPdfBtn" class="primary">Open new PDF</button>
+        <button type="button" id="afterBlankBtn">Blank PDF</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  <dialog id="errorDialog"><h2 id="errorTitle">Unable to open PDF</h2><p id="errorMessage"></p><button id="closeError" class="top-action primary">OK</button></dialog>
+  <div class="busy hidden" id="busy" role="status" aria-live="polite" aria-label="Working"><div class="spinner"></div><div id="busyText">Loading PDF…</div><div class="busy-progress hidden" id="busyProgress"><div class="busy-progress-fill" id="busyProgressFill"></div></div><div class="busy-percent hidden" id="busyPercent">0%</div></div>
+
+  
+
+
+  
+
+<script src="assets/bootstrap.js" defer></script>
+<script src="assets/support.js" defer></script>
+</body>
+</html>
