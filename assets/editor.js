@@ -473,7 +473,7 @@
       rec.holder.querySelector('.page-actions').append(del,rotations);rec.holder.append(above,below);
     }
     function rotatePage(rec,degrees){
-      finishTextEditing();rec.rotation=((rec.rotation||0)+degrees+360)%360;updatePageZoom(rec);refreshThumbnails();commitHistory();
+      finishTextEditing();rec.rotation=((rec.rotation||0)+degrees+360)%360;fitDocument();refreshThumbnails();commitHistory();
     }
 
 
@@ -527,6 +527,7 @@
       pageOrder.splice(insertIndex,0,pageKey); pageRecords.set(pageKey,rec);pageBank.set(pageKey,rec);
       if(nextKey&&pageRecords.get(nextKey))workspace.insertBefore(rec.holder,pageRecords.get(nextKey).holder); else workspace.appendChild(rec.holder);
       addPageInsertControls(rec); setupPagePointer(rec); updatePageZoom(rec); updatePageNumbers(); currentPage=pageKey;markActiveThumbnail();
+      fitPageWidthsIfNeeded();
       if(recordHistory){
         commitHistory(); updateUndoState();
       }
@@ -1782,6 +1783,7 @@
           rec.objects.forEach(o=>{if(o.cover){const hit=[...rec.textLayer.children].find(h=>+h.dataset.sourceIndex===o.sourceItemIndex);if(hit){o.sourceHitIndex=[...rec.textLayer.children].indexOf(hit);hit.style.pointerEvents='none';}}renderObject(rec,o);});
           updatePageZoom(rec);pageObserver?.observe(rec.holder);requestSourceTextPreview(rec);
         }
+        fitPageWidthsIfNeeded();
         currentPage=pageOrder.includes(state.currentPage)?state.currentPage:pageOrder[0];updatePageNumbers();refreshLayers();if(state.selection&&pageRecords.get(state.selection.pageNum)?.objects.some(o=>o.id===state.selection.id))selectObject(state.selection.pageNum,state.selection.id);committedState=captureState();
       }finally{applyingHistory=false;updateUndoState();}
     }
@@ -1904,7 +1906,19 @@
       rec.shell.style.transform=`scale(${zoom}) ${transform}`;
       rec.holder.style.width=((r%180?h:w)*zoom)+'px';rec.holder.style.height=((r%180?w:h)*zoom)+'px';
     }
-    function fitDocument(){if(!pageOrder.length)return;const rec=pageRecords.get(pageOrder[0]);const width=(rec.rotation||0)%180?rec.viewport.height:rec.viewport.width;zoom=Math.max(.12,Math.min(1,(workspace.clientWidth-32)/width)*.9);for(const r of pageRecords.values())updatePageZoom(r);}
+    function fitDocument(){
+      if(!pageOrder.length)return;
+      // Portrait and rotated landscape pages share a zoom that fits the widest page.
+      let width=0;
+      for(const key of pageOrder){const rec=pageRecords.get(key);if(rec)width=Math.max(width,(rec.rotation||0)%180?rec.viewport.height:rec.viewport.width);}
+      if(!width)return;
+      zoom=Math.max(.01,Math.min(1,Math.max(1,workspace.clientWidth-32)/width)*.9);
+      for(const rec of pageRecords.values())updatePageZoom(rec);
+    }
+    function fitPageWidthsIfNeeded(){
+      const available=Math.max(1,workspace.clientWidth-32);
+      if(pageOrder.some(key=>{const rec=pageRecords.get(key);return rec&&((rec.rotation||0)%180?rec.viewport.height:rec.viewport.width)*zoom>available;}))fitDocument();
+    }
     window.addEventListener('resize',()=>{if(pdfDoc){fitDocument();positionLayersPanel();}});
     function markActiveThumbnail(){for(const b of $('#pageThumbnails').children){const active=b.dataset.page===currentPage;b.classList.toggle('active',active);b.querySelector('.thumb-jump')?.setAttribute('aria-current',active?'page':'false');}}
     function updateThumbnailImage(rec){

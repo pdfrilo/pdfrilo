@@ -40,7 +40,9 @@
     .file-name{max-width:38vw;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#697586;font-size:12.5px}
     .top-action{border:1px solid var(--line);background:#fff;color:#334155;border-radius:8px;padding:7px 10px;font-size:13px;font-weight:700}
     .top-action.primary{background:var(--blue);border-color:var(--blue);color:#fff}
-    .start-suggestion{margin-top:14px}
+    .topline>.mini-brand{margin-right:0}
+    .top-action.editor-suggestion{margin-right:auto;background:#16a34a;border-color:#16a34a;color:#fff}
+    .top-action.editor-suggestion:hover{background:#15803d;border-color:#15803d}
     #renamePdfForm{display:grid;gap:12px}#pdfNameInput{width:100%;padding:11px;border:1px solid #bac8d9;border-radius:8px;font:inherit;color:#1f2937}
     .dialog-actions{display:flex;justify-content:flex-end;gap:8px}
     #suggestionDialog{width:min(92vw,600px);max-height:85vh;overflow:auto}
