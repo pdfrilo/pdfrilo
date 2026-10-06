@@ -45,6 +45,7 @@
 
     let pdfDoc = null;
     let originalBytes = null;
+    let previewSourceRecord=null;
     let originalFileName = 'edited.pdf';
     let pageRecords = new Map();
     let pageOrder = [];
@@ -290,6 +291,7 @@
           else if(rec.hydrated && !rec.hydrating && !rec.previewRunning && pageOrder.length>8){
             rec.canvas.width=rec.canvas.height=1;rec.hydrated=false;rec.textLayer.innerHTML='';rec.imageHitLayer.innerHTML='';
             rec.sourceCheckPatches=null;rec.sourcePatches=null;rec.visibleRemovedSources=null;
+            discardInstantImagePreview(rec);rec.previewSourceBytes=null;rec.previewSourceSignature=null;
             rec.objects.forEach(o=>{delete o.sourceHitIndex;delete o.sourceImageHitIndex;});
           }
         }
@@ -306,8 +308,8 @@
       for(const entry of sourcePdfFonts.values())document.fonts.delete(entry.face);sourcePdfFonts.clear();sourceFontLoads.clear();sourceFontDocument=null;sourceFontSerial=0;
       if(engineWorker){engineWorker.terminate();engineWorker=null;engineReady=null;rejectEngineRequests(new Error('Document closed.'));}
       thumbnailObserver?.disconnect();
-      for(const rec of pageBank.values()){clearTimeout(rec.thumbTimer);clearTimeout(rec.previewTimer);rec.renderTask?.cancel();rec.canvas.width=rec.canvas.height=1;}
-      if(pdfDoc)await pdfDoc.destroy();pdfDoc=null;originalBytes=null;
+      for(const rec of pageBank.values()){discardInstantImagePreview(rec);rec.previewSourceBytes=null;clearTimeout(rec.thumbTimer);clearTimeout(rec.previewTimer);rec.renderTask?.cancel();rec.canvas.width=rec.canvas.height=1;}
+      if(pdfDoc)await pdfDoc.destroy();pdfDoc=null;originalBytes=null;previewSourceRecord=null;
       workspace.replaceChildren();pageRecords.clear();pageBank.clear();pageOrder=[];history=[];redoHistory=[];committedState=null;savedSignature='';
       selected=null;currentPage=null;zoom=1;renderQueue=Promise.resolve();
       layersOpen=false;layersPanel.classList.add('hidden');toggleLayersBtn.classList.remove('active');
@@ -762,6 +764,7 @@
       }
       obj.sourcePdfQuad=JSON.parse(hit.dataset.pdfQuad);obj.sourceImageOccurrence=+hit.dataset.occurrence;
       selectObject(rec.pageNum,obj.id);
+      prepareInstantImagePreview(rec,obj).catch(()=>{});
       showToast('Existing PDF image selected. Use Delete image to remove it from the PDF.');
     }
 
@@ -1391,15 +1394,20 @@
           // Show browser typing immediately, even when this selection needs a
           // slow verified PDF render. This temporary editing surface covers the
           // old letters only; it never changes the canvas or the saved PDF.
+          // Deletion uses the same surface while permanent removal is pending.
           if(active&&!obj.deleted&&!verified&&el.isContentEditable)el.dataset.pendingTyping='true';
-          const pending=active&&!obj.deleted&&!verified&&el.dataset.pendingTyping==='true';
+          const pending=active&&!verified&&(obj.deleted||el.dataset.pendingTyping==='true');
           let surface=rec.objectLayer.querySelector(`.pending-text-surface[data-for="${obj.id}"]`);
           if(pending){
             if(!surface){surface=document.createElement('div');surface.className='pending-text-surface';surface.dataset.for=obj.id;surface.setAttribute('aria-hidden','true');rec.objectLayer.insertBefore(surface,el);}
             let x=obj.sourceDisplayX,y=obj.sourceDisplayY,w=obj.sourceW,h=obj.sourceH,angle=obj.angle||0;
             if(obj.pixelErase&&Math.abs(angle)<.001){
               const q=obj.pixelErase.quad,points=[];
-              for(let i=0;i<q.length;i+=2)points.push(pdfjsLib.Util.applyTransform([q[i],q[i+1]],rec.viewport.transform));
+              for(let i=0;i<q.length;i+=2){
+                // PDF.js transforms this array in place; its return value is void.
+                const point=[q[i],q[i+1]];
+                pdfjsLib.Util.applyTransform(point,rec.viewport.transform);points.push(point);
+              }
               x=Math.min(...points.map(p=>p[0]));y=Math.min(...points.map(p=>p[1]));
               w=Math.max(...points.map(p=>p[0]))-x;h=Math.max(...points.map(p=>p[1]))-y;
             }
@@ -1412,8 +1420,87 @@
       }
     }
 
+    function sourceImageOperator(ops,obj,removedImages){
+      const OPS=pdfjsLib.OPS,target=obj.sourcePdfQuad;
+      if(!target)return null;
+      const same=q=>q?.length===8&&q.every((v,i)=>nearEqual(v,target[i],.02));
+      const earlier=removedImages.filter(image=>same(image.sourcePdfQuad)&&(image.sourceImageOccurrence??0)<(obj.sourceImageOccurrence??0)).length;
+      const occurrence=(obj.sourceImageOccurrence??0)-earlier;
+      let ctm=[1,0,0,1,0,0],stack=[],seen=0;
+      for(let i=0;i<ops.fnArray.length;i++){
+        const fn=ops.fnArray[i],args=ops.argsArray[i]||[];
+        if(fn===OPS.save){stack.push(ctm.slice());continue;}
+        if(fn===OPS.restore){ctm=stack.pop()||ctm;continue;}
+        if(fn===OPS.transform){ctm=pdfjsLib.Util.transform(ctm,args);continue;}
+        if(fn===OPS.paintFormXObjectBegin){stack.push(ctm.slice());if(args[0])ctm=pdfjsLib.Util.transform(ctm,args[0]);continue;}
+        if(fn===OPS.paintFormXObjectEnd){ctm=stack.pop()||ctm;continue;}
+        if(![OPS.paintImageXObject,OPS.paintInlineImageXObject,OPS.paintJpegXObject].includes(fn))continue;
+        const quad=[[0,0],[1,0],[0,1],[1,1]].flatMap(([x,y])=>[ctm[0]*x+ctm[2]*y+ctm[4],ctm[1]*x+ctm[3]*y+ctm[5]]);
+        if(same(quad)&&seen++===occurrence)return i;
+      }
+      return null;
+    }
+    function discardInstantImagePreview(rec){
+      rec.imagePreviewSerial=(rec.imagePreviewSerial||0)+1;
+      rec.imagePreviewRender?.cancel();rec.imagePreviewRender=null;
+      const cache=rec.instantImagePreview;
+      if(cache){cache.before.width=cache.before.height=1;cache.after.width=cache.after.height=1;}
+      rec.instantImagePreview=null;rec.instantImagePending=null;
+    }
+    function applyInstantImagePreview(rec){
+      const cache=rec.instantImagePreview;if(!cache)return;
+      const signature=JSON.stringify(jobForPage(rec));
+      if(signature===cache.afterSignature&&!cache.applied){
+        rec.canvas.getContext('2d').drawImage(cache.after,0,0);
+        rec.visibleRemovedSources=new Set(cache.removedSources);cache.applied=true;
+      }else if(signature===cache.beforeSignature&&cache.applied){
+        rec.canvas.getContext('2d').drawImage(cache.before,0,0);
+        rec.visibleRemovedSources=new Set(cache.removedSources);cache.applied=false;
+      }
+    }
+    async function prepareInstantImagePreview(rec,obj){
+      if(rec.isBlank||!rec.hydrated||obj.type!=='source-image')return;
+      const beforeJob=jobForPage(rec,obj.id),beforeSignature=JSON.stringify(beforeJob),key=obj.id+'|'+beforeSignature;
+      if(rec.instantImagePreview?.key===key)return;
+      if(rec.instantImagePending?.key===key)return rec.instantImagePending.promise;
+      // Use the original page or a verified source page. Never paint an old
+      // source document over edits that have not yet been verified.
+      const useOriginal=!beforeJob.items.length&&!beforeJob.images.length;
+      if(!useOriginal&&(rec.previewSourceSignature!==beforeSignature||!rec.previewSourceBytes))return;
+      if(JSON.stringify(jobForPage(rec))!==beforeSignature&&rec.previewSignature!==beforeSignature)return;
+      discardInstantImagePreview(rec);
+      const serial=rec.imagePreviewSerial,generation=documentGeneration;
+      const before=document.createElement('canvas');before.width=rec.canvas.width;before.height=rec.canvas.height;before.getContext('2d').drawImage(rec.canvas,0,0);
+      const removedSources=[...(rec.visibleRemovedSources||[])],sourceBytes=useOriginal?null:rec.previewSourceBytes.slice(0);
+      const afterSignature=JSON.stringify(jobForPage(rec,null,obj.id));
+      const pending={key,promise:null};rec.instantImagePending=pending;
+      pending.promise=(async()=>{
+        let task=null,after=null,retained=false;
+        try{
+          let page=rec.page;
+          if(sourceBytes){task=pdfjsLib.getDocument(pdfOptions(sourceBytes));page=await(await task.promise).getPage(1);}
+          const ops=await page.getOperatorList(),index=sourceImageOperator(ops,obj,beforeJob.images);
+          if(index==null)return;
+          after=document.createElement('canvas');after.width=before.width;after.height=before.height;
+          const render=page.render({canvasContext:after.getContext('2d',{alpha:false}),viewport:page.getViewport({scale:rec.viewport.scale}),transform:[rec.renderDpr,0,0,rec.renderDpr,0,0],operationsFilter:i=>i!==index});
+          rec.imagePreviewRender=render;await render.promise;
+          if(generation!==documentGeneration||serial!==rec.imagePreviewSerial||!rec.hydrated||JSON.stringify(jobForPage(rec,obj.id))!==beforeSignature)return;
+          rec.instantImagePreview={key,before,after,beforeSignature,afterSignature,removedSources,applied:false};retained=true;
+          applyInstantImagePreview(rec);syncSourceTextVisibility(rec);updateThumbnailImage(rec);
+        }catch(_){/* The verified removal engine remains the fallback. */}
+        finally{
+          if(task)await task.destroy().catch(()=>{});
+          if(!retained){before.width=before.height=1;if(after)after.width=after.height=1;}
+          if(serial===rec.imagePreviewSerial)rec.imagePreviewRender=null;
+          if(rec.instantImagePending===pending)rec.instantImagePending=null;
+        }
+      })();
+      return pending.promise;
+    }
+
     function requestSourceTextPreview(rec){
       if(!rec)return;
+      applyInstantImagePreview(rec);
       applyInstantTextPreview(rec);
       syncSourceTextVisibility(rec);
       if(rec.isBlank||!rec.hydrated)return;
@@ -1430,13 +1517,14 @@
     }
     async function renderRemovalPreview(rec,job,signature){
       const generation=documentGeneration;rec.previewRunning=true;
-      let task=null,canvas=null;
+      let task=null,canvas=null,sourceBytes=null;
       try{
         let doc;
         if(job.items.length||job.images.length){
           if(job.items.some(item=>item.pixelErase))await cacheRasterImages(rec);
           const response=await engineRequest('remove',{jobs:[job],onlyPage:rec.originalPageNum});
           if(generation!==documentGeneration||JSON.stringify(jobForPage(rec))!==signature)return;
+          sourceBytes=response.bytes.slice(0);
           task=pdfjsLib.getDocument(pdfOptions(response.bytes));doc=await task.promise;
         }
         const page=doc?await doc.getPage(1):rec.page;
@@ -1448,6 +1536,9 @@
         rec.canvas.getContext('2d').drawImage(canvas,0,0);
         rec.visibleRemovedSources=new Set(rec.objects.filter(sourceTextNeedsReplacement).map(o=>o.sourceItemIndex));
         syncSourceTextVisibility(rec);
+        // Retain source bytes for only the most recently verified page.
+        if(previewSourceRecord&&previewSourceRecord!==rec){previewSourceRecord.previewSourceBytes=null;previewSourceRecord.previewSourceSignature=null;}
+        rec.previewSourceBytes=sourceBytes;rec.previewSourceSignature=signature;previewSourceRecord=sourceBytes?rec:null;
         rec.previewSignature=signature;rec.previewError=null;rec.safeSourceObjects=rec.objects.filter(o=>o.cover||o.type==='source-image').map(deep);
         const thumb=document.createElement('canvas');thumb.width=100;thumb.height=Math.round(100*rec.viewport.height/rec.viewport.width);thumb.getContext('2d').drawImage(rec.canvas,0,0,thumb.width,thumb.height);rec.thumbnail=thumb.toDataURL();updateThumbnailImage(rec);
       }catch(e){
@@ -1540,6 +1631,7 @@
         el.style.background='transparent';
         syncSourceImageHits(rec);
         requestSourceTextPreview(rec);
+        prepareInstantImagePreview(rec,obj).catch(()=>{});
         el.style.border='0';
       }
       if(obj.type==='text')updateTextMoveHandle(rec,obj);
@@ -2330,7 +2422,7 @@
       if(images.length)await rawEngineRequest('raster',{pageNumber:rec.originalPageNum,images});
       if(generation===documentGeneration&&worker===engineWorker)rec.rasterCacheWorker=worker;
     }
-    function jobForPage(rec){return {pageNumber:rec.originalPageNum,width:rec.viewport.width,height:rec.viewport.height,items:rec.objects.filter(sourceTextNeedsReplacement).map(o=>({sourcePdfPoint:o.sourcePdfPoint,sourceRedactQuad:o.sourceRedactQuad,sourceItemIndex:o.sourceItemIndex,originalText:o.originalText,pixelErase:o.pixelErase||null})),images:rec.objects.filter(o=>o.type==='source-image'&&o.deleted).map(o=>({x:o.x,y:o.y,w:o.w,h:o.h,sourcePdfQuad:o.sourcePdfQuad,sourceImageOccurrence:o.sourceImageOccurrence}))};}
+    function jobForPage(rec,excludedImageId=null,includedImageId=null){return {pageNumber:rec.originalPageNum,width:rec.viewport.width,height:rec.viewport.height,items:rec.objects.filter(sourceTextNeedsReplacement).map(o=>({sourcePdfPoint:o.sourcePdfPoint,sourceRedactQuad:o.sourceRedactQuad,sourceItemIndex:o.sourceItemIndex,originalText:o.originalText,pixelErase:o.pixelErase||null})),images:rec.objects.filter(o=>o.type==='source-image'&&o.id!==excludedImageId&&(o.deleted||o.id===includedImageId)).map(o=>({x:o.x,y:o.y,w:o.w,h:o.h,sourcePdfQuad:o.sourcePdfQuad,sourceImageOccurrence:o.sourceImageOccurrence}))};}
     async function buildPermanentlyRedactedBase(){
       const jobs=pageOrder.map(k=>pageRecords.get(k)).filter(r=>!r.isBlank).map(jobForPage).filter(j=>j.items.length||j.images.length);
       permanentRedactionBaseActive=!!jobs.length;
