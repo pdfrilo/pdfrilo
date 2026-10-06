@@ -690,7 +690,7 @@
           if(typeof args[0]==='string')hit.dataset.imageId=args[0];
           hit.dataset.imageOrdinal=imageOrdinal;
           const existing=rec.objects.find(o=>o.type==='source-image'&&nearEqual(o.x,x)&&nearEqual(o.y,y)&&nearEqual(o.w,w)&&nearEqual(o.h,h)&&(o.sourceImageOccurrence==null||o.sourceImageOccurrence===sourceImageOccurrence));
-          if(existing){hit.dataset.objId=existing.id;existing.sourceImageHitIndex=rec.imageHitLayer.children.length;hit.style.pointerEvents=existing.deleted?'none':'auto';}
+          if(existing){hit.dataset.objId=existing.id;existing.sourceImageHitIndex=rec.imageHitLayer.children.length;hit.style.pointerEvents=existing.deleted?'none':'inherit';}
           hit.addEventListener('pointerdown',e=>{
             if(activeTool!=='image')return;
             e.stopPropagation();e.preventDefault();currentPage=rec.pageNum;
@@ -710,7 +710,10 @@
         const obj=rec.objects.find(o=>o.type==='source-image'&&o.id===hit.dataset.objId)||rec.objects.find(o=>o.type==='source-image'&&(o.sourceImageOccurrence==null||o.sourceImageOccurrence===occurrence)&&(o.sourcePdfQuad?o.sourcePdfQuad.every((v,i)=>nearEqual(v,quad[i],.02)):nearEqual(o.x,+hit.dataset.x)&&nearEqual(o.y,+hit.dataset.y)&&nearEqual(o.w,+hit.dataset.w)&&nearEqual(o.h,+hit.dataset.h)));
         if(obj){hit.dataset.objId=obj.id;obj.sourceImageHitIndex=index;}
         else delete hit.dataset.objId;
-        hit.style.pointerEvents=obj?.deleted?'none':'auto';
+        // Inherit the layer's active tool state. An explicit "auto" here would
+        // make this child clickable even when its parent has pointer-events:none,
+        // intercepting the text layer beneath large PDF background images.
+        hit.style.pointerEvents=obj?.deleted?'none':'inherit';
       });
     }
 
@@ -851,13 +854,17 @@
           let flatAbove=false,flatBelow=false;
           const mid=(top+bottom)/2,rowWidth=right-left;
           if(rowWidth>=12){
-            for(let gy=top;gy<bottom;gy++){
+            // Font ascent boxes can end one pixel above a clean baseline row,
+            // or start on the cell border. Include the existing narrow ring.
+            for(let gy=ey0;gy<ey1;gy++){
               let matching=0;
               for(let gx=left;gx<right;gx++){
                 const i=((gy-ey0)*ew+gx-ex0)*4;
                 if(data[i+3]>=220&&Math.max(Math.abs(data[i]-r),Math.abs(data[i+1]-g),Math.abs(data[i+2]-b))<=7)matching++;
               }
-              if(matching>=rowWidth*.85){if(gy<mid)flatAbove=true;else flatBelow=true;}
+              // A narrow cell rule or a separate vector watermark may cross a
+              // small part of an otherwise solid background band.
+              if(matching>=rowWidth*.8){if(gy<mid)flatAbove=true;else flatBelow=true;}
             }
           }
           // Ordinary PDF cells/pages are usually one flat colour with dark text
@@ -1171,6 +1178,17 @@
       const before=original.getContext('2d').getImageData(0,0,w,h).data.slice(),data=background.getContext('2d').createImageData(w,h);
       data.data.set(before);
       const bg=parseHexRgb(backgroundColor),fg=parseHexRgb(textColor),ink=new Uint8Array(w*h),rules=new Uint8Array(w*h);
+      const axis=fg.map((v,k)=>v-bg[k]),length=axis.reduce((sum,v)=>sum+v*v,0)||1;
+      let foreignPixels=0;
+      for(let i=0;i<before.length;i+=4){
+        const delta=bg.map((v,k)=>before[i+k]-v),t=delta.reduce((sum,v,k)=>sum+v*axis[k],0)/length;
+        // JPEG glyph fringes can have a modest colour cast; stronger off-axis
+        // colours identify a distinct graphic rather than compression noise.
+        if(Math.hypot(...delta.map((v,k)=>v-t*axis[k]))>45)foreignPixels++;
+      }
+      // Use the verified engine for overlapping coloured graphics. Its image
+      // edit leaves separate vector watermarks intact; a flat quick crop cannot.
+      if(foreignPixels>Math.max(3,w*h*.015))return;
       const contrast=(px,py)=>Math.max(...bg.map((v,k)=>Math.abs(v-before[(py*w+px)*4+k])));
       for(let py=0;py<h;py++)for(let px=0;px<w;px++){
         const i=(py*w+px)*4,direction=bg.reduce((sum,v,k)=>sum+(before[i+k]-v)*(fg[k]-v),0);
@@ -1920,14 +1938,14 @@
       }
       if(obj.type==='source-image'){
         const before=obj.deleted;obj.deleted=!obj.deleted;applyObjectStyle(rec,obj);updateProperties(obj);refreshLayers(rec.pageNum);
-        const hit=obj.sourceImageHitIndex!=null?rec.imageHitLayer.children[obj.sourceImageHitIndex]:null;if(hit)hit.style.pointerEvents=obj.deleted?'none':'auto';
+        const hit=obj.sourceImageHitIndex!=null?rec.imageHitLayer.children[obj.sourceImageHitIndex]:null;if(hit)hit.style.pointerEvents=obj.deleted?'none':'inherit';
         commitHistory();updateUndoState();showToast(obj.deleted?'Image removed.':'Image restored.');return;
       }
       const clone=deep(obj); const idx=rec.objects.findIndex(o=>o.id===obj.id); const el=rec.objectLayer.querySelector(`[data-id="${obj.id}"]`); if(el)el.remove();
       const sc=rec.objectLayer.querySelector(`.pdf-source-cover[data-for="${obj.id}"]`);if(sc)sc.remove();
       const mh=rec.objectLayer.querySelector(`.text-move-handle[data-for="${obj.id}"]`);if(mh)mh.remove();
       rec.objects.splice(idx,1);
-      if(obj.sourceHitIndex!=null && rec.textLayer.children[obj.sourceHitIndex]) rec.textLayer.children[obj.sourceHitIndex].style.pointerEvents='auto';
+      if(obj.sourceHitIndex!=null && rec.textLayer.children[obj.sourceHitIndex]) rec.textLayer.children[obj.sourceHitIndex].style.pointerEvents='inherit';
       syncLayerOrder(rec);
       commitHistory();updateUndoState();clearSelection();refreshLayers(rec.pageNum);
     }
@@ -1954,7 +1972,7 @@
         for(const p of state.pages){
           const rec=pageBank.get(p.key);if(!rec)continue;
           rec.rotation=p.rotation;rec.objects=p.objects.map(deep);pageRecords.set(p.key,rec);workspace.appendChild(rec.holder);
-          rec.objectLayer.replaceChildren();for(const hit of rec.textLayer.children)hit.style.pointerEvents='auto';
+          rec.objectLayer.replaceChildren();for(const hit of rec.textLayer.children)hit.style.pointerEvents='inherit';
           syncSourceImageHits(rec);
           rec.objects.forEach(o=>{if(o.cover){const hit=[...rec.textLayer.children].find(h=>+h.dataset.sourceIndex===o.sourceItemIndex);if(hit){o.sourceHitIndex=[...rec.textLayer.children].indexOf(hit);hit.style.pointerEvents='none';}}renderObject(rec,o);});
           updatePageZoom(rec);pageObserver?.observe(rec.holder);requestSourceTextPreview(rec);
