@@ -105,6 +105,62 @@
     const editorFontLoads=new Map();
     let sourceFontDocument=null,sourceFontSerial=0;
     const sourcePdfFonts=new Map(),sourceFontLoads=new Map();
+    function readSourceUnicodeMap(stream){
+      if(!(stream instanceof PDFLib.PDFRawStream))return null;
+      const raw=Array.from(PDFLib.decodePDFRawStream(stream).decode(),b=>String.fromCharCode(b)).join('').replace(/%[^\r\n]*/g,'');
+      if(/\busecmap\b/.test(raw))return null;
+      const ranges=[...raw.matchAll(/begincodespacerange([\s\S]*?)endcodespacerange/g)].flatMap(b=>[...b[1].matchAll(/<([\da-f]+)>\s*<([\da-f]+)>/gi)]);
+      if(!ranges.length||ranges.some(m=>m[1].length!==4||m[2].length!==4))return null;
+      const map=new Map(),put=(code,hex)=>{if(hex.length%4)throw Error('Invalid font Unicode map');map.set(code,(hex.match(/.{4}/g)||[]).map(h=>String.fromCharCode(parseInt(h,16))).join('').replace(/^\uFEFF/,''));};
+      for(const b of raw.matchAll(/beginbfchar([\s\S]*?)endbfchar/g))for(const m of b[1].matchAll(/<([\da-f]{4})>\s*<([\da-f]+)>/gi))put(parseInt(m[1],16),m[2]);
+      for(const b of raw.matchAll(/beginbfrange([\s\S]*?)endbfrange/g))for(const m of b[1].matchAll(/<([\da-f]{4})>\s*<([\da-f]{4})>\s*(<([\da-f]+)>|\[([^\]]*)\])/gi)){
+        const start=parseInt(m[1],16),end=parseInt(m[2],16),values=m[5]?[...m[5].matchAll(/<([\da-f]+)>/gi)].map(v=>v[1]):null;
+        if(end<start||end-start>65535||(values&&values.length!==end-start+1))return null;
+        for(let code=start;code<=end;code++)put(code,values?values[code-start]:(BigInt('0x'+m[4])+BigInt(code-start)).toString(16).padStart(m[4].length,'0'));
+      }
+      return map;
+    }
+    // Some PDF font subsets omit the TrueType cmap entirely. Reconstruct it
+    // from the PDF's explicit CID mapping, retaining the original outlines.
+    function repairSourceFontCmap(bytes,fontDict,descendant,parsed){
+      if(parsed.directory.tables.cmap)return {bytes,aliases:null};
+      const N=PDFLib.PDFName.of;
+      if(fontDict.lookup(N('Encoding'))?.toString()!=='/Identity-H'||descendant.lookup(N('Subtype'))?.toString()!=='/CIDFontType2')return null;
+      const unicode=readSourceUnicodeMap(fontDict.lookup(N('ToUnicode')));if(!unicode)return null;
+      const cidMap=descendant.lookup(N('CIDToGIDMap')),cidBytes=cidMap instanceof PDFLib.PDFRawStream?PDFLib.decodePDFRawStream(cidMap).decode():null;
+      if(!cidBytes&&cidMap?.toString()!=='/Identity')return null;
+      const gid=code=>cidBytes?(code*2+1<cidBytes.length?(cidBytes[code*2]<<8)|cidBytes[code*2+1]:0):code;
+      const points=new Map(),aliases=new Map();
+      for(const [code,text] of unicode){const glyph=gid(code),characters=[...text];if(glyph>0&&glyph<parsed.numGlyphs&&characters.length===1&&characters[0].codePointAt(0)>=32)points.set(characters[0].codePointAt(0),glyph);}
+      // Resolve a missing ligature only by an exact known outline, never by
+      // guessing that a control code always means "fi". Other gaps stay unknown.
+      const knownFiOutline="[2048,1231,[{\"command\":\"moveTo\",\"args\":[180,0]},{\"command\":\"lineTo\",\"args\":[180,860]},{\"command\":\"lineTo\",\"args\":[89,874]},{\"command\":\"quadraticCurveTo\",\"args\":[59,880,41,895]},{\"command\":\"quadraticCurveTo\",\"args\":[24,910,24,938]},{\"command\":\"lineTo\",\"args\":[24,1041]},{\"command\":\"lineTo\",\"args\":[180,1041]},{\"command\":\"lineTo\",\"args\":[180,1075]},{\"command\":\"quadraticCurveTo\",\"args\":[180,1171,212,1254]},{\"command\":\"quadraticCurveTo\",\"args\":[243,1335,308,1397]},{\"command\":\"quadraticCurveTo\",\"args\":[372,1457,471,1491]},{\"command\":\"quadraticCurveTo\",\"args\":[569,1525,703,1526]},{\"command\":\"quadraticCurveTo\",\"args\":[746,1525,792,1521]},{\"command\":\"quadraticCurveTo\",\"args\":[837,1516,869,1506]},{\"command\":\"lineTo\",\"args\":[861,1375]},{\"command\":\"quadraticCurveTo\",\"args\":[858,1351,836,1347]},{\"command\":\"quadraticCurveTo\",\"args\":[811,1342,777,1342]},{\"command\":\"quadraticCurveTo\",\"args\":[678,1342,611,1325]},{\"command\":\"quadraticCurveTo\",\"args\":[543,1307,502,1273]},{\"command\":\"quadraticCurveTo\",\"args\":[461,1238,443,1187]},{\"command\":\"quadraticCurveTo\",\"args\":[425,1136,425,1067]},{\"command\":\"lineTo\",\"args\":[425,1041]},{\"command\":\"lineTo\",\"args\":[1076,1041]},{\"command\":\"lineTo\",\"args\":[1076,0]},{\"command\":\"lineTo\",\"args\":[823,0]},{\"command\":\"lineTo\",\"args\":[823,861]},{\"command\":\"lineTo\",\"args\":[433,861]},{\"command\":\"lineTo\",\"args\":[433,0]},{\"command\":\"closePath\",\"args\":[]}]]";
+      for(let code=1;code<32;code++){
+        if(unicode.has(code)||/\s/.test(String.fromCharCode(code)))continue;
+        const id=gid(code);if(id<=0||id>=parsed.numGlyphs)continue;const glyph=parsed.getGlyph(id);
+        if(JSON.stringify([parsed.unitsPerEm,glyph.advanceWidth,glyph.path.commands])===knownFiOutline){points.set(0xfb01,id);aliases.set(String.fromCharCode(code),'fi');}
+      }
+      if(!points.size)return null;
+      const entries=[...points].sort((a,b)=>a[0]-b[0]),cmap=new Uint8Array(28+entries.length*12),cv=new DataView(cmap.buffer);
+      cv.setUint16(2,1);cv.setUint16(4,3);cv.setUint16(6,10);cv.setUint32(8,12);cv.setUint16(12,12);cv.setUint32(16,cmap.length-12);cv.setUint32(24,entries.length);
+      entries.forEach(([cp,glyph],i)=>{const at=28+i*12;cv.setUint32(at,cp);cv.setUint32(at+4,cp);cv.setUint32(at+8,glyph);});
+      const source=new DataView(bytes.buffer,bytes.byteOffset,bytes.byteLength),tables=[];
+      for(let i=0;i<source.getUint16(4);i++){const at=12+i*16,tag=String.fromCharCode(...bytes.slice(at,at+4)),offset=source.getUint32(at+8),length=source.getUint32(at+12);if(offset+length>bytes.length)throw Error('Invalid embedded font');if(tag!=='cmap')tables.push({tag,data:bytes.slice(offset,offset+length)});}
+      // PDF-only subsets may also omit post; font export needs its metrics.
+      if(!tables.some(t=>t.tag==='post')){
+        const post=new Uint8Array(32),pv=new DataView(post.buffer),descriptor=descendant.lookupMaybe(N('FontDescriptor'),PDFLib.PDFDict);
+        pv.setUint32(0,0x00030000);pv.setInt32(4,Math.round((descriptor?.lookup(N('ItalicAngle'))?.asNumber?.()||0)*65536));tables.push({tag:'post',data:post});
+      }
+      tables.push({tag:'cmap',data:cmap});tables.sort((a,b)=>a.tag<b.tag?-1:a.tag>b.tag?1:0);
+      const header=12+tables.length*16,total=header+tables.reduce((n,t)=>n+((t.data.length+3)&~3),0),output=new Uint8Array(total),view=new DataView(output.buffer);
+      output.set(bytes.slice(0,4));view.setUint16(4,tables.length);const power=2**Math.floor(Math.log2(tables.length));view.setUint16(6,power*16);view.setUint16(8,Math.log2(power));view.setUint16(10,tables.length*16-power*16);
+      const sum=data=>{let result=0;for(let i=0;i<data.length;i+=4)result=(result+(((data[i]||0)*0x1000000+(data[i+1]||0)*0x10000+(data[i+2]||0)*256+(data[i+3]||0))>>>0))>>>0;return result;};
+      let offset=header,head=-1;
+      tables.forEach((table,i)=>{const at=12+i*16;if(table.tag==='head'){new DataView(table.data.buffer,table.data.byteOffset,table.data.byteLength).setUint32(8,0);head=offset;}
+        output.set([...table.tag].map(c=>c.charCodeAt(0)),at);view.setUint32(at+4,sum(table.data));view.setUint32(at+8,offset);view.setUint32(at+12,table.data.length);output.set(table.data,offset);offset+=(table.data.length+3)&~3;});
+      if(head>=0)view.setUint32(head+8,(0xb1b0afba-sum(output))>>>0);
+      return {bytes:output,aliases};
+    }
     async function loadSourcePdfFont(name){
       if(!name||typeof FontFace==='undefined')return null;
       if(sourceFontLoads.has(name))return sourceFontLoads.get(name);
@@ -112,16 +168,26 @@
       const promise=(async()=>{
         await ensureWritingTools();
         if(!sourceFontDocument)sourceFontDocument=PDFLib.PDFDocument.load(originalBytes,{updateMetadata:false});
-        const doc=await sourceFontDocument,N=PDFLib.PDFName.of;
+        const doc=await sourceFontDocument,N=PDFLib.PDFName.of,exact=[],prefixed=[];
         for(const [,value] of doc.context.enumerateIndirectObjects()){
-          if(!(value instanceof PDFLib.PDFDict)||value.lookup(N('Type'))?.toString()!=='/Font')continue;
-          const base=value.lookup(N('BaseFont'))?.decodeText?.();if(base!==name)continue;
+          if(!(value instanceof PDFLib.PDFDict)||value.lookup(N('Type'))?.toString()!=='/Font'||/^\/CIDFontType/.test(value.lookup(N('Subtype'))?.toString()||''))continue;
+          const base=value.lookup(N('BaseFont'))?.decodeText?.();
+          if(base===name)exact.push(value);
+          else if(base&&base.replace(/^[A-Z]{6}\+/,'')===name.replace(/^[A-Z]{6}\+/,''))prefixed.push(value);
+        }
+        // A generated PDF.js prefix is safe to ignore only for a unique font.
+        // Multiple different subsets of the same family must not be confused.
+        const matches=exact.length?exact:prefixed.length===1?prefixed:[];
+        for(const value of matches){
           const descendants=value.lookupMaybe(N('DescendantFonts'),PDFLib.PDFArray),font=descendants?descendants.lookup(0,PDFLib.PDFDict):value,descriptor=font.lookupMaybe(N('FontDescriptor'),PDFLib.PDFDict),stream=descriptor?.lookup(N('FontFile2'));
           if(!(stream instanceof PDFLib.PDFRawStream))continue;
-          const bytes=PDFLib.decodePDFRawStream(stream).decode().slice(),parsed=window.fontkit.create(bytes),family='RiloPdf'+generation+'_'+sourceFontSerial++;
+          let bytes=PDFLib.decodePDFRawStream(stream).decode().slice(),parsed=window.fontkit.create(bytes);
+          const repaired=repairSourceFontCmap(bytes,value,font,parsed);if(!repaired)continue;
+          if(repaired.bytes!==bytes)parsed=window.fontkit.create(repaired.bytes);bytes=repaired.bytes;
+          const family='RiloPdf'+generation+'_'+sourceFontSerial++;
           const style=/italic|oblique/i.test(parsed.subfamilyName||parsed.postscriptName)?'italic':'normal',weight=/bold|black|heavy/i.test(parsed.subfamilyName||parsed.postscriptName)?'700':'400';
           const face=new FontFace(family,bytes,{weight,style});await face.load();if(generation!==documentGeneration)return null;
-          document.fonts.add(face);const entry={family,bytes,face,weight,style,supported:new Set(parsed.characterSet),fallback:compatibleFont(parsed.familyName)};sourcePdfFonts.set(family,entry);return entry;
+          document.fonts.add(face);const entry={family,bytes,face,weight,style,supported:new Set(parsed.characterSet),glyphAliases:repaired.aliases,fallback:compatibleFont(parsed.familyName)};sourcePdfFonts.set(family,entry);return entry;
         }
         return null;
       })().catch(()=>null);sourceFontLoads.set(name,promise);return promise;
@@ -1140,7 +1206,13 @@
       ensureEngine().catch(()=>{});
       if(rec.imageHitLayer?.children.length)cacheRasterImages(rec).catch(()=>{});
       const generation=documentGeneration,sourceFont=await loadSourcePdfFont(span.dataset.pdfFontName);
-      if(sourceFont){span.dataset.renderFont=sourceFont.family;span.dataset.weight=sourceFont.weight;span.dataset.style=sourceFont.style;}
+      if(sourceFont){
+        span.dataset.renderFont=sourceFont.family;span.dataset.weight=sourceFont.weight;span.dataset.style=sourceFont.style;
+        if(sourceFont.glyphAliases?.size){
+          const original=span.dataset.encodedText??span.textContent,decoded=[...original].map(c=>sourceFont.glyphAliases.get(c)??c).join('');
+          if(decoded!==original){span.dataset.encodedText=original;span.textContent=decoded;}
+        }
+      }
       await ensureEditorFont(span.dataset.renderFont||span.dataset.font);if(generation!==documentGeneration||!pageRecords.has(rec.pageNum)||span.style.pointerEvents==='none')return;
       const sr=span.getBoundingClientRect(), pr=rec.shell.getBoundingClientRect();
       const fontSize=parseFloat(span.dataset.size)||18;
@@ -1173,7 +1245,7 @@
       // visibly move the text before the user changes anything.
       const displayY=y;
       const obj={
-        id:uid(),type:'text',x,y:displayY,w,h,text:span.textContent,originalText:span.textContent,deleted:false,
+        id:uid(),type:'text',x,y:displayY,w,h,text:span.textContent,originalText:span.textContent,sourceEncodedText:span.dataset.encodedText||null,deleted:false,
         sourceX:x,sourceY:y,sourceW:w,sourceH:h,sourceDisplayX:x,sourceDisplayY:displayY,
         sourceMaskX:sourceMaskRect.x,sourceMaskY:sourceMaskRect.y,sourceMaskW:sourceMaskRect.w,sourceMaskH:sourceMaskRect.h,
         sourcePdfPoint:JSON.parse(span.dataset.pdfPoint),sourceRedactQuad:JSON.parse(span.dataset.redactQuad),sourceItemIndex:+span.dataset.sourceIndex,sourceBaseline:JSON.parse(span.dataset.baseline),angle:+span.dataset.angle,
@@ -2422,7 +2494,7 @@
       if(images.length)await rawEngineRequest('raster',{pageNumber:rec.originalPageNum,images});
       if(generation===documentGeneration&&worker===engineWorker)rec.rasterCacheWorker=worker;
     }
-    function jobForPage(rec,excludedImageId=null,includedImageId=null){return {pageNumber:rec.originalPageNum,width:rec.viewport.width,height:rec.viewport.height,items:rec.objects.filter(sourceTextNeedsReplacement).map(o=>({sourcePdfPoint:o.sourcePdfPoint,sourceRedactQuad:o.sourceRedactQuad,sourceItemIndex:o.sourceItemIndex,originalText:o.originalText,pixelErase:o.pixelErase||null})),images:rec.objects.filter(o=>o.type==='source-image'&&o.id!==excludedImageId&&(o.deleted||o.id===includedImageId)).map(o=>({x:o.x,y:o.y,w:o.w,h:o.h,sourcePdfQuad:o.sourcePdfQuad,sourceImageOccurrence:o.sourceImageOccurrence}))};}
+    function jobForPage(rec,excludedImageId=null,includedImageId=null){return {pageNumber:rec.originalPageNum,width:rec.viewport.width,height:rec.viewport.height,items:rec.objects.filter(sourceTextNeedsReplacement).map(o=>({sourcePdfPoint:o.sourcePdfPoint,sourceRedactQuad:o.sourceRedactQuad,sourceItemIndex:o.sourceItemIndex,originalText:o.sourceEncodedText||o.originalText,pixelErase:o.pixelErase||null})),images:rec.objects.filter(o=>o.type==='source-image'&&o.id!==excludedImageId&&(o.deleted||o.id===includedImageId)).map(o=>({x:o.x,y:o.y,w:o.w,h:o.h,sourcePdfQuad:o.sourcePdfQuad,sourceImageOccurrence:o.sourceImageOccurrence}))};}
     async function buildPermanentlyRedactedBase(){
       const jobs=pageOrder.map(k=>pageRecords.get(k)).filter(r=>!r.isBlank).map(jobForPage).filter(j=>j.items.length||j.images.length);
       permanentRedactionBaseActive=!!jobs.length;

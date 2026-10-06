@@ -35,7 +35,7 @@ function unicodeMap(stream,L){
  }
  return {length,map};
 }
-function fontDecoder(length,map){return value=>{if(value.length%length)throw new Error('Incomplete character code');const glyphs=[];for(let i=0;i<value.length;i+=length){const bytes=value.slice(i,i+length);let code=0;for(const c of bytes)code=code*256+c.charCodeAt(0);const text=map?map.get(code):(code>=32&&code<127?bytes:null);glyphs.push({c:text??null,bytes,code,wordSpace:length===1&&code===32});}return glyphs;};}
+function fontDecoder(length,map,identityFallback=null){return value=>{if(value.length%length)throw new Error('Incomplete character code');const glyphs=[];for(let i=0;i<value.length;i+=length){const bytes=value.slice(i,i+length);let code=0;for(const c of bytes)code=code*256+c.charCodeAt(0);const text=map?(map.get(code)??(identityFallback?.has(code)?String.fromCharCode(code):null)):(code>=32&&code<127?bytes:null);glyphs.push({c:text??null,bytes,code,wordSpace:length===1&&code===32});}return glyphs;};}
 function candidates(source,fontInfo,initialMatrix=[1,0,0,1,0,0],initialState={},onForm=null){
  const ts=tokens(source),runs=[];let args=[],ctm=initialMatrix.slice(),stack=[];
  let state={font:null,size:0,leading:0,rise:0,mode:0,charSpace:0,wordSpace:0,hScale:1,...initialState},bt=null;
@@ -91,6 +91,10 @@ export async function tryPreciseTextRemoval(input,jobs,onlyPage=null){
   pdf=await L.PDFDocument.load(input,{updateMetadata:false});
   for(const job of jobs){
    const page=pdf.getPage(job.pageNumber-1);
+   // PDF.js exposes an unmapped Identity-H CID as its character code. Accept
+   // that exact placeholder only when it occurs in the selected source text;
+   // the original code, glyph width and baseline still identify the draw call.
+   const identityFallback=new Set(job.items.flatMap(item=>[...item.originalText].map(c=>c.codePointAt(0)).filter(code=>code>0&&code<32&&!/\s/.test(String.fromCharCode(code)))));
    function decoderFor(resources,parentDecoder=null){
    const fonts=resources?.lookupMaybe(L.PDFName.of('Font'),L.PDFDict);
    const states=resources?.lookup(L.PDFName.of('ExtGState'));
@@ -113,7 +117,7 @@ export async function tryPreciseTextRemoval(input,jobs,onlyPage=null){
      const m=descendant.lookup(L.PDFName.of('FontMatrix'));if(m instanceof L.PDFArray&&!m.asArray().every((n,i)=>n instanceof L.PDFNumber&&Math.abs(n.asNumber()-[.001,0,0,.001,0,0][i])<1e-9))throw new Error('Unsupported font matrix');
      const widths=descendant.lookup(L.PDFName.of('W')),values=new Map(),defaultWidth=descendant.lookup(L.PDFName.of('DW'))?.asNumber?.()??1000;
      if(widths instanceof L.PDFArray)for(let i=0;i<widths.size();){const first=widths.lookup(i++,L.PDFNumber).asNumber(),next=widths.lookup(i++);if(next instanceof L.PDFArray){for(let j=0;j<next.size();j++)values.set(first+j,next.lookup(j,L.PDFNumber).asNumber());}else {const last=next.asNumber(),width=widths.lookup(i++,L.PDFNumber).asNumber();if(last<first||last-first>65535)throw new Error('Invalid font widths');for(let code=first;code<=last;code++)values.set(code,width);}}
-     info={decode:fontDecoder(2,unicode.map),width:code=>values.get(code)??defaultWidth};
+     info={decode:fontDecoder(2,unicode.map,identityFallback),width:code=>values.get(code)??defaultWidth};
     }else if(['/Type1','/TrueType'].includes(type)&&(unicode?unicode.length===1:(ascii&&(encoding==='/WinAnsiEncoding'||encoding==='/StandardEncoding'||(!encoding&&standard))))){
      const widths=f.lookup(L.PDFName.of('Widths')),first=f.lookup(L.PDFName.of('FirstChar'))?.asNumber?.()||0;
      const metric=standard&&ascii?pdf.embedStandardFont(base):null;
