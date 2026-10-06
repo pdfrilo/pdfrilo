@@ -152,6 +152,11 @@
       clearTimeout(showToast.t);
       showToast.t = setTimeout(()=>toast.classList.remove('show'), ms);
     }
+    let busyAnimation=null,busyShown=0,busyTarget=0,busyLimit=0;
+    function paintBusyProgress(){
+      busyProgressFill.style.width=busyShown+'%';
+      busyPercent.textContent=Math.floor(busyShown)+'%';
+    }
     function setBusy(on, text='Working…', progress=null){
       busyText.textContent = text;
       busy.classList.toggle('hidden', !on);
@@ -159,13 +164,35 @@
       busyProgress.classList.toggle('hidden',!hasProgress);
       busyPercent.classList.toggle('hidden',!hasProgress);
       if(hasProgress){
-        const pct=clamp(Math.round(progress),0,100);
-        busyProgressFill.style.width=pct+'%';
-        busyPercent.textContent=pct+'%';
-      }else if(!on){
-        busyProgressFill.style.width='0%';
-        busyPercent.textContent='0%';
+        busyTarget=Math.max(busyTarget,clamp(progress,0,100));
+        // Advance gently within the current stage. Never claim completion
+        // before the first page and its editing layers are actually ready.
+        busyLimit=Math.max(busyTarget,Math.min(98,busyTarget+8));
+        if(!busyAnimation){
+          let last=performance.now();
+          busyAnimation=setInterval(()=>{
+            const now=performance.now(),dt=Math.min(.1,(now-last)/1000);last=now;
+            const distance=busyTarget-busyShown;
+            busyShown=Math.min(busyLimit,busyShown+(distance>.05?Math.max(6,distance*3):Math.max(.12,(busyLimit-busyShown)*.18))*dt);
+            paintBusyProgress();
+          },16);
+        }
+      }else{
+        clearInterval(busyAnimation);busyAnimation=null;
+        if(!on){busyShown=busyTarget=busyLimit=0;paintBusyProgress();}
       }
+    }
+    async function finishBusyProgress(){
+      clearInterval(busyAnimation);busyAnimation=null;
+      // Briefly finish the animation, including for very small cached PDFs.
+      const start=busyShown,started=performance.now();
+      await new Promise(resolve=>{
+        const frame=now=>{
+          const t=clamp((now-started)/180,0,1);
+          busyShown=start+(100-start)*(1-(1-t)**3);paintBusyProgress();
+          if(t<1)requestAnimationFrame(frame);else resolve();
+        };requestAnimationFrame(frame);
+      });
     }
 
     function readPdfFileWithProgress(file,onProgress){
@@ -176,11 +203,11 @@
         reader.onprogress=e=>{
           if(e.lengthComputable && e.total>0){
             const filePct=e.loaded/e.total;
-            // Reserve the last 35% for parsing and page rendering.
-            onProgress(5+filePct*60);
+            // File reading is small compared with parsing and rendering.
+            onProgress(18+filePct*12);
           }
         };
-        reader.onload=()=>{onProgress(65);resolve(reader.result)};
+        reader.onload=()=>{onProgress(30);resolve(reader.result)};
         reader.readAsArrayBuffer(file);
       });
     }
@@ -218,7 +245,7 @@
       try{
         setBusy(true,'Loading PDF tools…');await ensurePdfLibraries();
         await ensureWritingTools(false);const out=await PDFLib.PDFDocument.create();out.addPage([595.28,841.89]);
-        const bytes=await out.save();await openDocument(bytes.buffer,'blank.pdf','addtext');
+        const bytes=await out.save();await openDocument(bytes.buffer,'blank.pdf','addtext');await finishBusyProgress();
         showToast('Blank PDF ready. Add text, images or shapes.');
       }catch(e){showError(e,'Unable to create a blank PDF');}
       finally{loadingDocument=false;setBusy(false);}
@@ -232,13 +259,14 @@
       if(!confirmDiscard())return;
       loadingDocument=true;
       try{
-        setBusy(true,'Loading PDF tools…',2);await ensurePdfLibraries();
+        setBusy(true,'Loading PDF tools…',8);await ensurePdfLibraries();
         const bytes=await readPdfFileWithProgress(file,p=>setBusy(true,'Reading PDF file…',p));
-        await openDocument(bytes,file.name,'text');showToast('PDF ready. Click text to edit it.');
+        await openDocument(bytes,file.name,'text');await finishBusyProgress();showToast('PDF ready. Click text to edit it.');
       }catch(e){showError(e,'Unable to open PDF');}
       finally{loadingDocument=false;setBusy(false);}
     }
     async function openDocument(bytes,name,tool){
+      if(loadingDocument)setBusy(true,'Opening PDF…',34);
       const task=pdfjsLib.getDocument(pdfOptions(bytes.slice(0)));
       let next;
       try{
@@ -266,8 +294,11 @@
           }
         }
       },{rootMargin:'500px 0px'});
-      for(let i=1;i<=pdfDoc.numPages;i++){await renderPage(i);setBusy(true,`Preparing page ${i} of ${pdfDoc.numPages}…`,70+25*i/pdfDoc.numPages);}
-      currentPage=pageOrder[0];setPagePanelOpen(true);fitDocument();await hydratePage(pageRecords.get(currentPage));
+      for(let i=1;i<=pdfDoc.numPages;i++){await renderPage(i);setBusy(true,`Preparing page ${i} of ${pdfDoc.numPages}…`,45+20*i/pdfDoc.numPages);}
+      currentPage=pageOrder[0];setPagePanelOpen(true);fitDocument();
+      setBusy(true,'Rendering the first page…',72);await hydratePage(pageRecords.get(currentPage));
+      if(!pageRecords.get(currentPage)?.hydrated)throw new Error('The first PDF page could not be prepared. Please try opening the file again.');
+      setBusy(true,'PDF ready…',96);
       updatePageNumbers();resetHistory();refreshLayers();
     }
     async function releaseDocument(){
@@ -306,7 +337,13 @@
         rec.renderTask=rec.page.render({canvasContext:ctx,viewport:v,transform:[dpr,0,0,dpr,0,0]});
         await rec.renderTask.promise;rec.renderTask=null;
         rec.textLayer.replaceChildren();rec.imageHitLayer.replaceChildren();
-        await buildTextHitLayer(rec);await buildImageHitLayer(rec);await prepareInstantTextPreview(rec);rec.hydrated=true;rec.previewSignature=JSON.stringify({...jobForPage(rec),items:[],images:[]});rec.textLayer.style.pointerEvents=activeTool==='text'?'auto':'none';rec.imageHitLayer.style.pointerEvents=activeTool==='image'?'auto':'none';
+        const reportLoad=()=>loadingDocument&&rec.pageNum===pageOrder[0];
+        if(reportLoad())setBusy(true,'Preparing editable text…',80);
+        await buildTextHitLayer(rec);
+        if(reportLoad())setBusy(true,'Preparing images…',86);
+        await buildImageHitLayer(rec);
+        if(reportLoad())setBusy(true,'Preparing the editor…',90);
+        await prepareInstantTextPreview(rec);rec.hydrated=true;rec.previewSignature=JSON.stringify({...jobForPage(rec),items:[],images:[]});rec.textLayer.style.pointerEvents=activeTool==='text'?'auto':'none';rec.imageHitLayer.style.pointerEvents=activeTool==='image'?'auto':'none';
         rec.objects.forEach(o=>{
           if(o.cover){const hit=[...rec.textLayer.children].find(x=>x.dataset.sourceIndex===String(o.sourceItemIndex));if(hit){o.sourceHitIndex=[...rec.textLayer.children].indexOf(hit);hit.style.pointerEvents='none';}}
         });
@@ -1098,6 +1135,7 @@
 
     async function editExistingText(rec,span,pointerEvent){
       ensureEngine().catch(()=>{});
+      if(rec.imageHitLayer?.children.length)cacheRasterImages(rec).catch(()=>{});
       const generation=documentGeneration,sourceFont=await loadSourcePdfFont(span.dataset.pdfFontName);
       if(sourceFont){span.dataset.renderFont=sourceFont.family;span.dataset.weight=sourceFont.weight;span.dataset.style=sourceFont.style;}
       await ensureEditorFont(span.dataset.renderFont||span.dataset.font);if(generation!==documentGeneration||!pageRecords.has(rec.pageNum)||span.style.pointerEvents==='none')return;
@@ -1349,8 +1387,25 @@
         if(obj.type!=='text' || !obj.cover)continue;
         const el=rec.objectLayer.querySelector(`[data-id="${obj.id}"]`);
         if(el){
-          const active=sourceTextNeedsReplacement(obj);
-          el.style.color=(active && !obj.deleted && rec.visibleRemovedSources?.has(obj.sourceItemIndex))?obj.color:'transparent';
+          const active=sourceTextNeedsReplacement(obj),verified=rec.visibleRemovedSources?.has(obj.sourceItemIndex);
+          // Show browser typing immediately, even when this selection needs a
+          // slow verified PDF render. This temporary editing surface covers the
+          // old letters only; it never changes the canvas or the saved PDF.
+          if(active&&!obj.deleted&&!verified&&el.isContentEditable)el.dataset.pendingTyping='true';
+          const pending=active&&!obj.deleted&&!verified&&el.dataset.pendingTyping==='true';
+          let surface=rec.objectLayer.querySelector(`.pending-text-surface[data-for="${obj.id}"]`);
+          if(pending){
+            if(!surface){surface=document.createElement('div');surface.className='pending-text-surface';surface.dataset.for=obj.id;surface.setAttribute('aria-hidden','true');rec.objectLayer.insertBefore(surface,el);}
+            let x=obj.sourceDisplayX,y=obj.sourceDisplayY,w=obj.sourceW,h=obj.sourceH,angle=obj.angle||0;
+            if(obj.pixelErase&&Math.abs(angle)<.001){
+              const q=obj.pixelErase.quad,points=[];
+              for(let i=0;i<q.length;i+=2)points.push(pdfjsLib.Util.applyTransform([q[i],q[i+1]],rec.viewport.transform));
+              x=Math.min(...points.map(p=>p[0]));y=Math.min(...points.map(p=>p[1]));
+              w=Math.max(...points.map(p=>p[0]))-x;h=Math.max(...points.map(p=>p[1]))-y;
+            }
+            Object.assign(surface.style,{position:'absolute',pointerEvents:'none',left:x+'px',top:y+'px',width:w+'px',height:h+'px',background:obj.sourceBackground||'#ffffff',transform:angle?`rotate(${angle}rad)`:'',transformOrigin:'left top',zIndex:String(9+rec.objects.indexOf(obj)*3)});
+          }else{surface?.remove();delete el.dataset.pendingTyping;}
+          el.style.color=(active && !obj.deleted && (verified||pending))?obj.color:'transparent';
           el.style.background='transparent';
           el.style.caretColor=obj.color||'#000000';
         }
@@ -1942,6 +1997,7 @@
         commitHistory();updateUndoState();showToast(obj.deleted?'Image removed.':'Image restored.');return;
       }
       const clone=deep(obj); const idx=rec.objects.findIndex(o=>o.id===obj.id); const el=rec.objectLayer.querySelector(`[data-id="${obj.id}"]`); if(el)el.remove();
+      rec.objectLayer.querySelector(`.pending-text-surface[data-for="${obj.id}"]`)?.remove();
       const sc=rec.objectLayer.querySelector(`.pdf-source-cover[data-for="${obj.id}"]`);if(sc)sc.remove();
       const mh=rec.objectLayer.querySelector(`.text-move-handle[data-for="${obj.id}"]`);if(mh)mh.remove();
       rec.objects.splice(idx,1);
@@ -2247,7 +2303,14 @@
     }
     async function engineRequest(type,data){await ensureEngine();return rawEngineRequest(type,data);}
     async function cacheRasterImages(rec){
-      await ensureEngine();if(rec.rasterCacheWorker===engineWorker)return;
+      if(rec.rasterCachePromise)return rec.rasterCachePromise;
+      const task=loadRasterImages(rec);rec.rasterCachePromise=task;
+      try{await task;}finally{if(rec.rasterCachePromise===task)rec.rasterCachePromise=null;}
+    }
+    async function loadRasterImages(rec){
+      const generation=documentGeneration;
+      await ensureEngine();if(generation!==documentGeneration||rec.rasterCacheWorker===engineWorker)return;
+      const worker=engineWorker;
       const images=[];
       // PDF.js uses different object IDs for display and operator-list intents.
       // Use the already rendered display objects for the original image pixels.
@@ -2263,7 +2326,9 @@
         else if(image.data?.length===W*H*3){pixels=new Uint8ClampedArray(W*H*4);for(let i=0,j=0;i<image.data.length;i+=3,j+=4){pixels[j]=image.data[i];pixels[j+1]=image.data[i+1];pixels[j+2]=image.data[i+2];pixels[j+3]=255;}}
         if(pixels)images.push({quad:JSON.parse(hit.dataset.pdfQuad),occurrence:+hit.dataset.occurrence,width:W,height:H,pixels});
       }
-      if(images.length)await engineRequest('raster',{pageNumber:rec.originalPageNum,images});rec.rasterCacheWorker=engineWorker;
+      if(generation!==documentGeneration||worker!==engineWorker)return;
+      if(images.length)await rawEngineRequest('raster',{pageNumber:rec.originalPageNum,images});
+      if(generation===documentGeneration&&worker===engineWorker)rec.rasterCacheWorker=worker;
     }
     function jobForPage(rec){return {pageNumber:rec.originalPageNum,width:rec.viewport.width,height:rec.viewport.height,items:rec.objects.filter(sourceTextNeedsReplacement).map(o=>({sourcePdfPoint:o.sourcePdfPoint,sourceRedactQuad:o.sourceRedactQuad,sourceItemIndex:o.sourceItemIndex,originalText:o.originalText,pixelErase:o.pixelErase||null})),images:rec.objects.filter(o=>o.type==='source-image'&&o.deleted).map(o=>({x:o.x,y:o.y,w:o.w,h:o.h,sourcePdfQuad:o.sourcePdfQuad,sourceImageOccurrence:o.sourceImageOccurrence}))};}
     async function buildPermanentlyRedactedBase(){
