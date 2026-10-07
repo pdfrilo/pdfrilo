@@ -1,7 +1,7 @@
 // Remove complete text-show operands without rewriting neighboring operators.
 // Keep the original text advance with a numeric TJ operand, so later glyphs stay
 // in position. Unsupported encodings, clipping and ambiguous glyph matches use the fallback.
-const norm=s=>s.normalize('NFKC').replace(/\s/g,'');
+const norm=s=>s.normalize('NFKD').replace(/\s/g,'');
 const mul=(a,b)=>[a[0]*b[0]+a[2]*b[1],a[1]*b[0]+a[3]*b[1],a[0]*b[2]+a[2]*b[3],a[1]*b[2]+a[3]*b[3],a[0]*b[4]+a[2]*b[5]+a[4],a[1]*b[4]+a[3]*b[5]+a[5]];
 function tokens(source){
  const out=[];let i=0;

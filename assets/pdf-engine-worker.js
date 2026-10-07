@@ -6,7 +6,7 @@ import {tryPreciseTextRemoval,tryPreciseImageRemoval} from './precise-text-remov
 let original = null;
 const rasterImages=new Map();
 const rasterKey=(page,quad,occurrence)=>page+'|'+quad.map(v=>v.toFixed(2)).join('|')+'|'+occurrence;
-const norm = s => s.normalize('NFKC').replace(/\s/g, '');
+const norm = s => s.normalize('NFKD').replace(/\s/g, '');
 const close = (a,b,t=.12) => a.length===b.length && a.every((v,i)=>Math.abs(v-b[i])<=t);
 const rect = q => [Math.min(q[0],q[2],q[4],q[6]),Math.min(q[1],q[3],q[5],q[7]),Math.max(q[0],q[2],q[4],q[6]),Math.max(q[1],q[3],q[5],q[7])];
 function overlaps(a,b) {

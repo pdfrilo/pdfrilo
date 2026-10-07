@@ -1,30 +1,30 @@
-@font-face{font-family:RiloSans;src:url('fonts/NimbusSans-Regular.otf') format('opentype');font-weight:400;font-style:normal;font-display:swap}
-@font-face{font-family:RiloSans;src:url('fonts/NimbusSans-Bold.otf') format('opentype');font-weight:700;font-style:normal;font-display:swap}
-@font-face{font-family:RiloSans;src:url('fonts/NimbusSans-Italic.otf') format('opentype');font-weight:400;font-style:italic;font-display:swap}
-@font-face{font-family:RiloSans;src:url('fonts/NimbusSans-BoldItalic.otf') format('opentype');font-weight:700;font-style:italic;font-display:swap}
-@font-face{font-family:RiloSerif;src:url('fonts/NimbusRoman-Regular.otf') format('opentype');font-weight:400;font-style:normal;font-display:swap}
-@font-face{font-family:RiloSerif;src:url('fonts/NimbusRoman-Bold.otf') format('opentype');font-weight:700;font-style:normal;font-display:swap}
-@font-face{font-family:RiloSerif;src:url('fonts/NimbusRoman-Italic.otf') format('opentype');font-weight:400;font-style:italic;font-display:swap}
-@font-face{font-family:RiloSerif;src:url('fonts/NimbusRoman-BoldItalic.otf') format('opentype');font-weight:700;font-style:italic;font-display:swap}
-@font-face{font-family:RiloMono;src:url('fonts/NimbusMonoPS-Regular.otf') format('opentype');font-weight:400;font-style:normal;font-display:swap}
-@font-face{font-family:RiloMono;src:url('fonts/NimbusMonoPS-Bold.otf') format('opentype');font-weight:700;font-style:normal;font-display:swap}
-@font-face{font-family:RiloMono;src:url('fonts/NimbusMonoPS-Italic.otf') format('opentype');font-weight:400;font-style:italic;font-display:swap}
-@font-face{font-family:RiloMono;src:url('fonts/NimbusMonoPS-BoldItalic.otf') format('opentype');font-weight:700;font-style:italic;font-display:swap}
-@font-face{font-family:RiloUnicode;src:url('fonts/DejaVuSans.ttf') format('truetype');font-weight:400;font-style:normal;font-display:swap}
-@font-face{font-family:RiloUnicode;src:url('fonts/DejaVuSans-Bold.ttf') format('truetype');font-weight:700;font-style:normal;font-display:swap}
-@font-face{font-family:RiloBookman;src:url('fonts/URWBookman-Light.otf') format('opentype');font-weight:400;font-style:normal;font-display:swap}
-@font-face{font-family:RiloBookman;src:url('fonts/URWBookman-Demi.otf') format('opentype');font-weight:700;font-style:normal;font-display:swap}
-@font-face{font-family:RiloBookman;src:url('fonts/URWBookman-LightItalic.otf') format('opentype');font-weight:400;font-style:italic;font-display:swap}
-@font-face{font-family:RiloBookman;src:url('fonts/URWBookman-DemiItalic.otf') format('opentype');font-weight:700;font-style:italic;font-display:swap}
-@font-face{font-family:RiloPalatino;src:url('fonts/P052-Roman.otf') format('opentype');font-weight:400;font-style:normal;font-display:swap}
-@font-face{font-family:RiloPalatino;src:url('fonts/P052-Bold.otf') format('opentype');font-weight:700;font-style:normal;font-display:swap}
-@font-face{font-family:RiloPalatino;src:url('fonts/P052-Italic.otf') format('opentype');font-weight:400;font-style:italic;font-display:swap}
-@font-face{font-family:RiloPalatino;src:url('fonts/P052-BoldItalic.otf') format('opentype');font-weight:700;font-style:italic;font-display:swap}
-@font-face{font-family:RiloSchoolbook;src:url('fonts/C059-Roman.otf') format('opentype');font-weight:400;font-style:normal;font-display:swap}
-@font-face{font-family:RiloSchoolbook;src:url('fonts/C059-Bold.otf') format('opentype');font-weight:700;font-style:normal;font-display:swap}
-@font-face{font-family:RiloSchoolbook;src:url('fonts/C059-Italic.otf') format('opentype');font-weight:400;font-style:italic;font-display:swap}
-@font-face{font-family:RiloSchoolbook;src:url('fonts/C059-BdIta.otf') format('opentype');font-weight:700;font-style:italic;font-display:swap}
-@font-face{font-family:RiloNarrow;src:url('fonts/NimbusSansNarrow-Regular.otf') format('opentype');font-weight:400;font-style:normal;font-display:swap}
-@font-face{font-family:RiloNarrow;src:url('fonts/NimbusSansNarrow-Bold.otf') format('opentype');font-weight:700;font-style:normal;font-display:swap}
-@font-face{font-family:RiloNarrow;src:url('fonts/NimbusSansNarrow-Oblique.otf') format('opentype');font-weight:400;font-style:italic;font-display:swap}
-@font-face{font-family:RiloNarrow;src:url('fonts/NimbusSansNarrow-BoldOblique.otf') format('opentype');font-weight:700;font-style:italic;font-display:swap}
+@font-face{font-family:RiloSans;src:url('fonts/NimbusSans-Regular.woff2') format('woff2'),url('fonts/NimbusSans-Regular.otf') format('opentype');font-weight:400;font-style:normal;font-display:swap}
+@font-face{font-family:RiloSans;src:url('fonts/NimbusSans-Bold.woff2') format('woff2'),url('fonts/NimbusSans-Bold.otf') format('opentype');font-weight:700;font-style:normal;font-display:swap}
+@font-face{font-family:RiloSans;src:url('fonts/NimbusSans-Italic.woff2') format('woff2'),url('fonts/NimbusSans-Italic.otf') format('opentype');font-weight:400;font-style:italic;font-display:swap}
+@font-face{font-family:RiloSans;src:url('fonts/NimbusSans-BoldItalic.woff2') format('woff2'),url('fonts/NimbusSans-BoldItalic.otf') format('opentype');font-weight:700;font-style:italic;font-display:swap}
+@font-face{font-family:RiloSerif;src:url('fonts/NimbusRoman-Regular.woff2') format('woff2'),url('fonts/NimbusRoman-Regular.otf') format('opentype');font-weight:400;font-style:normal;font-display:swap}
+@font-face{font-family:RiloSerif;src:url('fonts/NimbusRoman-Bold.woff2') format('woff2'),url('fonts/NimbusRoman-Bold.otf') format('opentype');font-weight:700;font-style:normal;font-display:swap}
+@font-face{font-family:RiloSerif;src:url('fonts/NimbusRoman-Italic.woff2') format('woff2'),url('fonts/NimbusRoman-Italic.otf') format('opentype');font-weight:400;font-style:italic;font-display:swap}
+@font-face{font-family:RiloSerif;src:url('fonts/NimbusRoman-BoldItalic.woff2') format('woff2'),url('fonts/NimbusRoman-BoldItalic.otf') format('opentype');font-weight:700;font-style:italic;font-display:swap}
+@font-face{font-family:RiloMono;src:url('fonts/NimbusMonoPS-Regular.woff2') format('woff2'),url('fonts/NimbusMonoPS-Regular.otf') format('opentype');font-weight:400;font-style:normal;font-display:swap}
+@font-face{font-family:RiloMono;src:url('fonts/NimbusMonoPS-Bold.woff2') format('woff2'),url('fonts/NimbusMonoPS-Bold.otf') format('opentype');font-weight:700;font-style:normal;font-display:swap}
+@font-face{font-family:RiloMono;src:url('fonts/NimbusMonoPS-Italic.woff2') format('woff2'),url('fonts/NimbusMonoPS-Italic.otf') format('opentype');font-weight:400;font-style:italic;font-display:swap}
+@font-face{font-family:RiloMono;src:url('fonts/NimbusMonoPS-BoldItalic.woff2') format('woff2'),url('fonts/NimbusMonoPS-BoldItalic.otf') format('opentype');font-weight:700;font-style:italic;font-display:swap}
+@font-face{font-family:RiloUnicode;src:url('fonts/DejaVuSans.woff2') format('woff2'),url('fonts/DejaVuSans.ttf') format('truetype');font-weight:400;font-style:normal;font-display:swap}
+@font-face{font-family:RiloUnicode;src:url('fonts/DejaVuSans-Bold.woff2') format('woff2'),url('fonts/DejaVuSans-Bold.ttf') format('truetype');font-weight:700;font-style:normal;font-display:swap}
+@font-face{font-family:RiloBookman;src:url('fonts/URWBookman-Light.woff2') format('woff2'),url('fonts/URWBookman-Light.otf') format('opentype');font-weight:400;font-style:normal;font-display:swap}
+@font-face{font-family:RiloBookman;src:url('fonts/URWBookman-Demi.woff2') format('woff2'),url('fonts/URWBookman-Demi.otf') format('opentype');font-weight:700;font-style:normal;font-display:swap}
+@font-face{font-family:RiloBookman;src:url('fonts/URWBookman-LightItalic.woff2') format('woff2'),url('fonts/URWBookman-LightItalic.otf') format('opentype');font-weight:400;font-style:italic;font-display:swap}
+@font-face{font-family:RiloBookman;src:url('fonts/URWBookman-DemiItalic.woff2') format('woff2'),url('fonts/URWBookman-DemiItalic.otf') format('opentype');font-weight:700;font-style:italic;font-display:swap}
+@font-face{font-family:RiloPalatino;src:url('fonts/P052-Roman.woff2') format('woff2'),url('fonts/P052-Roman.otf') format('opentype');font-weight:400;font-style:normal;font-display:swap}
+@font-face{font-family:RiloPalatino;src:url('fonts/P052-Bold.woff2') format('woff2'),url('fonts/P052-Bold.otf') format('opentype');font-weight:700;font-style:normal;font-display:swap}
+@font-face{font-family:RiloPalatino;src:url('fonts/P052-Italic.woff2') format('woff2'),url('fonts/P052-Italic.otf') format('opentype');font-weight:400;font-style:italic;font-display:swap}
+@font-face{font-family:RiloPalatino;src:url('fonts/P052-BoldItalic.woff2') format('woff2'),url('fonts/P052-BoldItalic.otf') format('opentype');font-weight:700;font-style:italic;font-display:swap}
+@font-face{font-family:RiloSchoolbook;src:url('fonts/C059-Roman.woff2') format('woff2'),url('fonts/C059-Roman.otf') format('opentype');font-weight:400;font-style:normal;font-display:swap}
+@font-face{font-family:RiloSchoolbook;src:url('fonts/C059-Bold.woff2') format('woff2'),url('fonts/C059-Bold.otf') format('opentype');font-weight:700;font-style:normal;font-display:swap}
+@font-face{font-family:RiloSchoolbook;src:url('fonts/C059-Italic.woff2') format('woff2'),url('fonts/C059-Italic.otf') format('opentype');font-weight:400;font-style:italic;font-display:swap}
+@font-face{font-family:RiloSchoolbook;src:url('fonts/C059-BdIta.woff2') format('woff2'),url('fonts/C059-BdIta.otf') format('opentype');font-weight:700;font-style:italic;font-display:swap}
+@font-face{font-family:RiloNarrow;src:url('fonts/NimbusSansNarrow-Regular.woff2') format('woff2'),url('fonts/NimbusSansNarrow-Regular.otf') format('opentype');font-weight:400;font-style:normal;font-display:swap}
+@font-face{font-family:RiloNarrow;src:url('fonts/NimbusSansNarrow-Bold.woff2') format('woff2'),url('fonts/NimbusSansNarrow-Bold.otf') format('opentype');font-weight:700;font-style:normal;font-display:swap}
+@font-face{font-family:RiloNarrow;src:url('fonts/NimbusSansNarrow-Oblique.woff2') format('woff2'),url('fonts/NimbusSansNarrow-Oblique.otf') format('opentype');font-weight:400;font-style:italic;font-display:swap}
+@font-face{font-family:RiloNarrow;src:url('fonts/NimbusSansNarrow-BoldOblique.woff2') format('woff2'),url('fonts/NimbusSansNarrow-BoldOblique.otf') format('opentype');font-weight:700;font-style:italic;font-display:swap}
