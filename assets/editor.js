@@ -1223,10 +1223,9 @@
       const backgroundInfo=analyzeTextBackground(rec,x,y,w,h);
       const sourceBackground=backgroundInfo.color;
       const sourceColor=detectTextColor(rec,x,y,w,h,sourceBackground);
-      // Never shrink the erase region to only some detected glyph pixels: that
-      // leaves visible letter fragments. Use the complete, neighbour-safe line
-      // box instead.
-      const sourceMaskRect={x,y,w,h};
+      // Keep preview geometry separate from selection/font metrics. The native
+      // glyph bounds cover the complete source item even when its ascent is wrong.
+      const sourceMaskRect=JSON.parse(span.dataset.previewRect||'null')||{x,y,w,h};
       let pixelErase=null;
       if(span.dataset.rasterText==='true'||span.dataset.imageText==='true'){
         if(!backgroundInfo.flat){showToast('The image behind this text has a complex background. This selection cannot be changed safely.');return;}
@@ -1404,8 +1403,7 @@
       rec.instantRasterPreviewSafe=true;
       const hits=[...rec.textLayer.children],sx=rec.canvas.width/rec.viewport.width,sy=rec.canvas.height/rec.viewport.height;
       const boxes=hits.map(hit=>({hit,x:parseFloat(hit.style.left),y:parseFloat(hit.style.top),w:parseFloat(hit.style.width),h:parseFloat(hit.style.height),angle:+hit.dataset.angle,margin:Math.max(2,parseFloat(hit.dataset.size||hit.style.height)*.2)}));
-      const candidates=boxes.filter(b=>Math.abs(b.angle)<.001 && !boxes.some(other=>other!==b && b.x-b.margin<other.x+other.w+other.margin && b.x+b.w+b.margin>other.x-other.margin && b.y-b.margin<other.y+other.h+other.margin && b.y+b.h+b.margin>other.y-other.margin));
-      if(!candidates.length&&!rec.imageHitLayer?.children.length)return;
+      if(!boxes.length&&!rec.imageHitLayer?.children.length)return;
       const backdrop=document.createElement('canvas');backdrop.width=rec.canvas.width;backdrop.height=rec.canvas.height;
       const textOps=new Set([OPS.showText,OPS.showSpacedText,OPS.nextLineShowText,OPS.nextLineSetSpacingShowText]);
       try{
@@ -1422,6 +1420,39 @@
           for(let i=0;i<before.length;i+=4){if(rows[Math.floor(i/4/w)]>w*.85||cols[(i/4)%w]>h*.85||Math.max(...bg.map((v,k)=>Math.abs(v-before[i+k])))<40)continue;ink++;if(Math.max(...bg.map((v,k)=>Math.abs(v-after[i+k])))>30&&Math.max(...bg.map((v,k)=>Math.abs(before[i+k]-after[i+k])))<25)remaining++;}
           if(ink>3&&remaining>ink*.45)b.hit.dataset.rasterText='true';
         }
+        // Font ascent/descent values are not always accurate in PDF subsets.
+        // Measure the changed glyph pixels against the native text-free render,
+        // using source baselines to separate close rows. This gives complete
+        // crops without cutting ascenders or hiding a neighbouring line.
+        const anchor=b=>{const base=JSON.parse(b.hit.dataset.baseline||'null'),size=+b.hit.dataset.size||b.h;if(base)return base[1]-size*.35;const q=JSON.parse(b.hit.dataset.redactQuad||'null');return q?(q[1]+q[3]+q[5]+q[7])/4+size*.15:b.y+b.h/2;};
+        for(const b of boxes){b.anchor=anchor(b);b.originalX=b.x;b.originalW=b.w;}
+        for(const b of boxes){
+          if(Math.abs(b.angle)>.001||b.hit.dataset.rasterText==='true'||b.hit.dataset.imageText==='true')continue;
+          const size=+b.hit.dataset.size||b.h,base=JSON.parse(b.hit.dataset.baseline||'null');
+          const top=Math.min(b.y-b.margin,base?base[1]-size*1.25:b.y-b.margin),bottom=Math.max(b.y+b.h+b.margin,base?base[1]+size*.4:b.y+b.h+b.margin);
+          const x=Math.max(0,Math.floor((b.x-b.margin)*sx)),y=Math.max(0,Math.floor(top*sy)),w=Math.min(rec.canvas.width,Math.ceil((b.x+b.w+b.margin)*sx))-x,h=Math.min(rec.canvas.height,Math.ceil(bottom*sy))-y;
+          if(w<1||h<1)continue;
+          const before=rec.canvas.getContext('2d').getImageData(x,y,w,h).data,after=backdrop.getContext('2d').getImageData(x,y,w,h).data;
+          const nearby=boxes.filter(o=>o!==b&&Math.abs(o.angle)<.001&&o.originalX<x/sx+w/sx&&o.originalX+o.originalW>x/sx);
+          let left=w,right=-1,first=h,last=-1;
+          for(let py=0;py<h;py++)for(let px=0;px<w;px++){
+            const i=(py*w+px)*4;if(![0,1,2,3].some(k=>Math.abs(before[i+k]-after[i+k])>3))continue;
+            const xx=(x+px+.5)/sx,yy=(y+py+.5)/sy;
+            // A pixel closer to another row belongs to that row. Side-by-side
+            // items also keep their own overhangs, bullets and leading glyphs.
+            if(nearby.some(o=>Math.abs(yy-o.anchor)<Math.abs(yy-b.anchor)-.05 || (Math.abs(o.anchor-b.anchor)<size*.2&&xx>=o.originalX&&xx<o.originalX+o.originalW&&(xx<b.originalX||xx>=b.originalX+b.originalW))))continue;
+            left=Math.min(left,px);right=Math.max(right,px);first=Math.min(first,py);last=Math.max(last,py);
+          }
+          if(right<left)continue;
+          // One physical pixel of halo clears antialiasing fringes. No font-size
+          // halo is needed now that the actual ink bounds are known.
+          b.x=Math.max(0,x+left-1)/sx;b.y=Math.max(0,y+first-1)/sy;
+          b.w=(Math.min(rec.canvas.width,x+right+2)-b.x*sx)/sx;b.h=(Math.min(rec.canvas.height,y+last+2)-b.y*sy)/sy;b.margin=0;
+          b.hit.dataset.previewRect=JSON.stringify({x:b.x,y:b.y,w:b.w,h:b.h});
+        }
+        const candidates=boxes.filter(b=>Math.abs(b.angle)<.001 && !boxes.some(other=>other!==b &&
+          ((b.x-b.margin<other.x+other.w+other.margin && b.x+b.w+b.margin>other.x-other.margin && b.y-b.margin<other.y+other.h+other.margin && b.y+b.h+b.margin>other.y-other.margin)||
+          (Math.abs(other.anchor-b.anchor)<Math.min(b.h,other.h)*.2&&b.originalX<other.originalX+other.originalW&&b.originalX+b.originalW>other.originalX))));
         for(const b of candidates){
           const x=Math.max(0,Math.floor((b.x-b.margin)*sx)),y=Math.max(0,Math.floor((b.y-b.margin)*sy));
           const w=Math.min(rec.canvas.width,Math.ceil((b.x+b.w+b.margin)*sx))-x,h=Math.min(rec.canvas.height,Math.ceil((b.y+b.h+b.margin)*sy))-y;
@@ -1430,7 +1461,9 @@
           const original=crop(rec.canvas),background=crop(backdrop);
           const before=original.getContext('2d').getImageData(0,0,w,h).data,after=background.getContext('2d').getImageData(0,0,w,h).data;
           if(b.hit.dataset.rasterText==='true'||!before.some((v,i)=>Math.abs(v-after[i])>3)){b.hit.dataset.imageText='true';continue;}
-          rec.sourcePatches.set(+b.hit.dataset.sourceIndex,{x,y,original,background});
+          const originalPixels=original.getContext('2d').createImageData(w,h),backgroundPixels=background.getContext('2d').createImageData(w,h);
+          originalPixels.data.set(before);backgroundPixels.data.set(after);
+          rec.sourcePatches.set(+b.hit.dataset.sourceIndex,{x,y,original,background,originalPixels,backgroundPixels});
         }
       }catch(_){rec.sourcePatches.clear();}
       finally{backdrop.width=backdrop.height=1;}
@@ -1472,7 +1505,7 @@
           let surface=rec.objectLayer.querySelector(`.pending-text-surface[data-for="${obj.id}"]`);
           if(pending){
             if(!surface){surface=document.createElement('div');surface.className='pending-text-surface';surface.dataset.for=obj.id;surface.setAttribute('aria-hidden','true');rec.objectLayer.insertBefore(surface,el);}
-            let x=obj.sourceDisplayX,y=obj.sourceDisplayY,w=obj.sourceW,h=obj.sourceH,angle=obj.angle||0;
+            let x=obj.sourceMaskX??obj.sourceDisplayX,y=obj.sourceMaskY??obj.sourceDisplayY,w=obj.sourceMaskW??obj.sourceW,h=obj.sourceMaskH??obj.sourceH,angle=obj.angle||0;
             if(obj.pixelErase&&Math.abs(angle)<.001){
               const q=obj.pixelErase.quad,points=[];
               for(let i=0;i<q.length;i+=2){
