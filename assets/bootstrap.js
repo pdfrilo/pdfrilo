@@ -43,16 +43,6 @@
   ['dragenter','dragover'].forEach(type=>drop.addEventListener(type,e=>{e.preventDefault();drop.style.background='#eaf4ff';}));
   ['dragleave','drop'].forEach(type=>drop.addEventListener(type,e=>{e.preventDefault();drop.style.background='';}));
   drop.addEventListener('drop',e=>{const file=e.dataTransfer.files?.[0];if(file)open(file);});
-  // Resolve domain metadata to the actual hosted address until a custom domain
-  // is connected. Relative asset paths need no edits during that move.
-  if(location.protocol!=='file:'){
-    const home=base.href;
-    const canonical=document.querySelector('link[rel="canonical"]');if(canonical)canonical.href=home;
-    const og=document.querySelector('meta[property="og:url"]');if(og)og.content=home;
-    for(const tag of document.querySelectorAll('script[type="application/ld+json"]')){
-      const data=JSON.parse(tag.textContent);
-      for(const entry of data['@graph']||[])if(entry.url==='./')entry.url=home;
-      tag.textContent=JSON.stringify(data);
-    }
-  }
+  // Production metadata is defined in the HTML and stays on pdfrilo.com.
+  // Resource URLs above still resolve against this deployment's asset directory.
 })();

@@ -166,8 +166,18 @@
     .layer-actions button:hover{background:#f4f8ff;border-color:#9dc6fb}
     .layer-actions button.danger{color:#c62828}
 
-    .blank-btn{margin-top:14px;border:1px solid #b9d8ff;background:#fff;color:#0b75f6;border-radius:10px;padding:12px 18px;font-weight:800;font-size:15px;box-shadow:0 4px 12px rgba(15,23,42,.06)}
+    .blank-btn{margin-top:14px;border:1px solid #b9d8ff;background:#fff;color:#0759b7;border-radius:10px;padding:12px 18px;font-weight:800;font-size:15px;box-shadow:0 4px 12px rgba(15,23,42,.06)}
     .blank-btn:hover{background:#eef6ff;border-color:#7db7ff}
+    #supportForm button[type="submit"]{background:#0759b7;border-color:#0759b7;color:#fff}
+    #supportForm button[type="submit"]:hover{background:#064a98;border-color:#064a98}
+    .how-steps{padding-left:24px;color:#536176}
+    .how-steps li{padding-left:6px;margin:14px 0}
+    .how-steps strong{color:#172033}
+    .faq-section details{border-bottom:1px solid #dce4ed;padding:14px 0}
+    .faq-section summary{cursor:pointer;font-weight:700;color:#172033;line-height:1.5;min-height:28px}
+    .faq-section details p{margin:12px 0 4px}
+    .faq-section a{color:#0759b7;text-underline-offset:3px}
+    .faq-contact{margin-top:22px}
     .after-download{position:fixed;inset:0;z-index:700;display:flex;align-items:center;justify-content:center;background:rgba(15,23,42,.36);padding:20px}
     .after-download.hidden{display:none!important}
     .after-download-card{width:min(92vw,460px);background:#fff;border-radius:18px;box-shadow:0 28px 70px rgba(15,23,42,.28);padding:24px;text-align:center}
